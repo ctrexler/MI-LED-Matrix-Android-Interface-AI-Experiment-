@@ -37,7 +37,21 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: gradle --no-daemon :app:assembleDebug
+        run: |
+          echo "=== Commit being built ==="
+          git log -1 --oneline
+          echo "=== Working directory ==="
+          pwd
+          echo "=== Gradle file locations ==="
+          find . -maxdepth 4 -type f \( -name '*.gradle' -o -name '*.gradle.kts' \) -print
+          echo "=== Settings ==="
+          cat settings.gradle
+          echo "=== Root build file ==="
+          cat build.gradle
+          echo "=== App build file ==="
+          cat app/build.gradle
+          echo "=== Build APK ==="
+          gradle --no-daemon :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: FourDisplayStudio-apk
