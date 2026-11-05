@@ -1,0 +1,8 @@
+{
+  "xml_parse": "passed",
+  "javascript_syntax": "passed",
+  "reference_matches_upload": true,
+  "packet_framing_sanity": "passed (Python cross-check; Java not executed)",
+  "android_build": "not run: Android SDK/Gradle not available in this environment",
+  "hardware_test": "not run"
+}
