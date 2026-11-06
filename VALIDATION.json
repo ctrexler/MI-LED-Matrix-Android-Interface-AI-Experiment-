@@ -1,10 +1,26 @@
 {
   "javascript_syntax": "passed",
-  "xml_parsing": "passed",
+  "XML_parse": "passed",
+  "workflow_YAML": "passed",
   "static_UI_ID_references": "passed",
-  "mock_model_tests": "passed: version-1 migration, version-2 normalization, 2x2 and 4-across split coordinates, reordering, deletion, undo",
-  "test_limit": "Canvas/Image mocks; no real pixel quality, Android WebView, gestures or BLE tests",
-  "android_compilation": "not run; GitHub Actions must verify",
-  "hardware_testing": "not run",
-  "reference_unchanged": true
+  "model_tests": {
+    "v1Migration": true,
+    "v2Migration": true,
+    "patternRoundTrip": true,
+    "wallSplitCoordinates": true,
+    "checkerPixels": true,
+    "borderPixels": true,
+    "stripePixels": true,
+    "gradientCoordinates": true,
+    "repeatPattern": true,
+    "latestWinsQueue": true,
+    "inFlightStaleSuppression": true,
+    "reorderDelete": true
+  },
+  "packet_framing_python_crosscheck": "passed: distinct 100-byte direct-display / 101-byte checksummed storage payloads",
+  "reference_integrity": true,
+  "test_limits": "Image/Canvas model tests use mocks. Native Java packet methods were source-reviewed, not executed. No real DOM/Android/gesture/render quality/BLE tests.",
+  "android_build": "not run; verify with GitHub Actions",
+  "live_preview_storage_preservation": "assumed at user request; not hardware-verified",
+  "system_bar_fix": "implemented native WebView margins; device verification required"
 }

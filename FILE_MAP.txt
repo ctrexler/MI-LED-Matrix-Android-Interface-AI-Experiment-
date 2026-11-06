@@ -1,4 +1,4 @@
-Upload these files to the exact matching repository paths. Replace existing files. No extra outer folder.
+Replace matching files at EXACT paths, preserving folders. Upload ZIP contents, not the ZIP or an enclosing folder.
 
 .github/workflows/build.yml
 .gitignore
@@ -13,9 +13,10 @@ app/src/main/assets/style.css
 app/src/main/assets/app.js
 README.md
 FILE_MAP.txt
+PROTOCOL.md
 THIRD_PARTY_NOTICES.md
 VALIDATION.json
 reference/index4.html
 
-Important: the app build file goes at app/build.gradle, NOT app/src/build.gradle.
-The prior PROTOCOL.md may remain; protocol commands and pacing are unchanged.
+Important: app/build.gradle is directly inside app, NOT app/src/.
+No permanent signing setup required. Export your old library before uninstalling.

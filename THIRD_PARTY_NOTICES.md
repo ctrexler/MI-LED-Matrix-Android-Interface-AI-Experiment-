@@ -1,10 +1,10 @@
-# Source provenance and attribution
+# Source provenance
 
-The original user-supplied index4.html is included unchanged under reference/. It is the direct reference for packet framing, checksum, command bytes, pixel layout and pacing. The supplied file does not state a license. Including it in this user-requested project does not assert that it is public domain or grant redistribution rights.
+The user-supplied index4.html is included unchanged under reference/. It supplies the storage command sequence, image layout, checksum and pacing. Its supplied text does not declare a license. A second direct-display HTML example was pasted by the user and attributed by them to offe's repository; its protocol is summarized in PROTOCOL.md.
 
 Requested credits:
 - Oscar Lindberg / offe: https://github.com/offe
 - skyline46: https://github.com/skyline46
 - mi-led-display: https://github.com/offe/mi-led-display
 
-Before public redistribution, verify applicable upstream licenses and retain exact copyright/license notices for any upstream-derived code. Credits alone do not replace license compliance. No copyright year or license grant is invented here. No endorsement is implied.
+Verify applicable licenses and retain exact upstream notices before publicly redistributing upstream-derived code/material. Credits do not replace licensing obligations. No copyright year or license grant has been guessed here. No endorsement is implied.
