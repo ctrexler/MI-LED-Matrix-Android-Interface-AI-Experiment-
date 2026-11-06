@@ -34,7 +34,7 @@ public class MainActivity extends Activity {
  private static class Link {BluetoothGatt gatt;volatile BluetoothGattCharacteristic characteristic;volatile int mtu=23,writeStatus=-1;volatile boolean ready,discovering;volatile CountDownLatch pending;}
  @Override public void onCreate(Bundle state){
   super.onCreate(state);BluetoothManager m=(BluetoothManager)getSystemService(BLUETOOTH_SERVICE);adapter=m==null?null:m.getAdapter();
-  if(Build.VERSION.SDK_INT>=30){getWindow().setDecorFitsSystemWindows(false);android.view.WindowInsetsController controller=getWindow().getInsetsController();if(controller!=null)controller.setSystemBarsAppearance(0,android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);}
+  if(Build.VERSION.SDK_INT>=30){getWindow().setDecorFitsSystemWindows(false);android.view.WindowInsetsController controller=getWindow().getDecorView().getWindowInsetsController();if(controller!=null)controller.setSystemBarsAppearance(0,android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);}
   FrameLayout host=new FrameLayout(this);host.setBackgroundColor(android.graphics.Color.rgb(14,20,29));web=new WebView(this);host.addView(web,new FrameLayout.LayoutParams(-1,-1));setContentView(host);
   host.setOnApplyWindowInsetsListener((v,insets)->{
    int left,top,right,bottom;
