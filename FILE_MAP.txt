@@ -1,0 +1,21 @@
+Upload these files to the exact matching repository paths. Replace existing files. No extra outer folder.
+
+.github/workflows/build.yml
+.gitignore
+settings.gradle
+build.gradle
+gradle.properties
+app/build.gradle
+app/src/main/AndroidManifest.xml
+app/src/main/java/org/fourdisplay/studio/MainActivity.java
+app/src/main/assets/index.html
+app/src/main/assets/style.css
+app/src/main/assets/app.js
+README.md
+FILE_MAP.txt
+THIRD_PARTY_NOTICES.md
+VALIDATION.json
+reference/index4.html
+
+Important: the app build file goes at app/build.gradle, NOT app/src/build.gradle.
+The prior PROTOCOL.md may remain; protocol commands and pacing are unchanged.
