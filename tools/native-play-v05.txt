@@ -1,9 +1,0 @@
-  @JavascriptInterface public void playSelected(String text){liveAllowed=false;clearPreviews();operate(()->{
-   try{JSONArray requested=new JSONArray(text);if(requested.length()<1||requested.length()>4)throw new Exception("Choose 1–4 displays");List<Integer> targets=new ArrayList<>();
-    for(int i=0;i<requested.length();i++){int index=requested.getInt(i);if(index<0||index>3||targets.contains(index))throw new Exception("Invalid or duplicate destination");Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect D"+(index+1)+" first");targets.add(index);}
-    waitForIdleLanes();CountDownLatch startGate=new CountDownLatch(1);List<Future<Void>> starts=new ArrayList<>();
-    try{for(int index:targets)starts.add(submitLane(index,()->{startGate.await();write(index,PLAY,0);}));}finally{startGate.countDown();}
-    int failures=0;for(int i=0;i<starts.size();i++){try{await(starts.get(i));}catch(Exception e){failures++;log("Stored slideshow start D"+(targets.get(i)+1)+": "+e.getMessage());}}
-    js("notify("+JSONObject.quote(failures==0?"Selected slideshow start commands dispatched together.":failures+" slideshow start command(s) failed. See Logs.")+")");
-   }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
-  });}
