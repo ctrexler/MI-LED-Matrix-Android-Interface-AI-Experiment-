@@ -27,10 +27,11 @@ public class MainActivity extends Activity {
  private WebView web;private ValueCallback<Uri[]> picker;
  private BluetoothAdapter adapter;private BluetoothLeScanner scanner;
  private final Handler ui=new Handler(Looper.getMainLooper());
- // Coordinator never performs GATT writes itself. Each device owns one serial lane.
+ // Coordinator never performs GATT writes itself. Each device owns one serial lane for storage uploads.
  private final ExecutorService coordinator=Executors.newSingleThreadExecutor();
  private final ExecutorService[] lanes={Executors.newSingleThreadExecutor(),Executors.newSingleThreadExecutor(),Executors.newSingleThreadExecutor(),Executors.newSingleThreadExecutor()};
- private final AtomicBoolean[] previewRunning={new AtomicBoolean(),new AtomicBoolean(),new AtomicBoolean(),new AtomicBoolean()};
+ private final ExecutorService previewWorker=Executors.newSingleThreadExecutor();
+ private final AtomicBoolean previewRunning=new AtomicBoolean();
  private final AtomicBoolean busy=new AtomicBoolean();
  private volatile boolean cancelled,destroyed,liveAllowed;
  private final Object previewLock=new Object();private final byte[][] pendingPreview=new byte[4][];
@@ -61,6 +62,7 @@ public class MainActivity extends Activity {
  private void js(String code){ui.post(()->{if(!destroyed)web.evaluateJavascript(code,null);});}
  private void log(String text){js("log("+JSONObject.quote(text)+")");}
  private void status(int index,String text){Link link=links.get(index);boolean ready=link!=null&&link.ready;js("setStatus("+index+","+JSONObject.quote(text)+","+ready+")");}
+ private boolean isReady(int index){Link link=links.get(index);return link!=null&&link.ready;}
  private boolean bluetooth(){
   boolean permitted=Build.VERSION.SDK_INT>=31?checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==PackageManager.PERMISSION_GRANTED&&checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED:checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
   if(!permitted){requestPermissions(Build.VERSION.SDK_INT>=31?new String[]{Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT}:new String[]{Manifest.permission.ACCESS_FINE_LOCATION},40);log("Grant permissions, then scan/connect again.");return false;}
@@ -85,13 +87,14 @@ public class MainActivity extends Activity {
    @Override public void onMtuChanged(BluetoothGatt gatt,int mtu,int code){if(links.get(index)!=link)return;if(code==BluetoothGatt.GATT_SUCCESS)link.mtu=mtu;discover(link);}
    @Override public void onServicesDiscovered(BluetoothGatt gatt,int code){
     if(links.get(index)!=link)return;BluetoothGattService service=gatt.getService(SERVICE);link.characteristic=service==null?null:service.getCharacteristic(CHAR);int properties=link.characteristic==null?0:link.characteristic.getProperties();link.ready=code==BluetoothGatt.GATT_SUCCESS&&link.characteristic!=null&&(properties&(BluetoothGattCharacteristic.PROPERTY_WRITE|BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE))!=0&&link.mtu>=104;
+    if(link.ready){try{gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);}catch(Exception ignored){}}
     status(index,link.ready?"Ready (MTU "+link.mtu+")":"Not ready: check service / MTU "+link.mtu);log("D"+(index+1)+" services "+code+", properties "+properties+", MTU "+link.mtu);
    }
    @Override public void onCharacteristicWrite(BluetoothGatt gatt,BluetoothGattCharacteristic characteristic,int code){if(links.get(index)!=link)return;link.writeStatus=code;CountDownLatch pending=link.pending;if(pending!=null)pending.countDown();}
   },BluetoothDevice.TRANSPORT_LE);}catch(Exception e){status(index,"Connection failed");log(e.toString());}
  }
  private void checkCancel() throws Exception {if(cancelled||destroyed||Thread.currentThread().isInterrupted())throw new Exception("Cancelled; storage changes cannot be undone.");}
- // Only call from the corresponding device lane. At most one outstanding GATT write per device.
+ // Serial GATT write with completion verification.
  private void write(int index,byte[] data,long delay) throws Exception {
   checkCancel();Link link=links.get(index);if(link==null||!link.ready)throw new Exception("D"+(index+1)+" not ready");if(data.length>link.mtu-3)throw new Exception("MTU too small");
   BluetoothGattCharacteristic characteristic=link.characteristic;int type=(characteristic.getProperties()&BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)!=0?BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE:BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
@@ -103,24 +106,60 @@ public class MainActivity extends Activity {
    throw error;
   }finally{link.pending=null;}
  }
+ // Direct non-blocking write for single-packet synchronized commands (e.g. PLAY).
+ private void fastWrite(int index,byte[] data){
+  Link link=links.get(index);if(link==null||!link.ready)return;
+  BluetoothGattCharacteristic characteristic=link.characteristic;
+  int type=(characteristic.getProperties()&BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)!=0?BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE:BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
+  try{
+   if(Build.VERSION.SDK_INT>=33)link.gatt.writeCharacteristic(characteristic,data,type);
+   else{characteristic.setWriteType(type);characteristic.setValue(data);link.gatt.writeCharacteristic(characteristic);}
+  }catch(Exception e){log("Direct write D"+(index+1)+": "+e.getMessage());}
+ }
  private static byte[] storePacket(int block,byte[] rgb){byte[] packet=new byte[101];packet[0]=(byte)188;packet[1]=15;packet[2]=(byte)(block+1);System.arraycopy(rgb,block*96,packet,3,96);int sum=0;for(int i=1;i<99;i++)sum=(sum+(packet[i]&255))&255;packet[99]=(byte)sum;packet[100]=85;return packet;}
  private static byte[] livePacket(int block,byte[] rgb){byte[] packet=new byte[100];packet[0]=(byte)188;packet[1]=15;packet[2]=(byte)(block+1);System.arraycopy(rgb,block*96,packet,3,96);packet[99]=85;return packet;}
  private void clearPreviews(){synchronized(previewLock){Arrays.fill(pendingPreview,null);}}
- private boolean hasPreview(int index){synchronized(previewLock){return pendingPreview[index]!=null;}}
- private void schedulePreview(final int index){
-  if(destroyed||busy.get()||!liveAllowed||!previewRunning[index].compareAndSet(false,true))return;
-  try{lanes[index].execute(()->{
-   try{while(!destroyed&&!busy.get()&&liveAllowed){byte[] rgb;synchronized(previewLock){rgb=pendingPreview[index];pendingPreview[index]=null;}if(rgb==null)break;Link link=links.get(index);if(link==null||!link.ready)continue;
-    try{write(index,FRAME,2);for(int block=0;block<8;block++)write(index,livePacket(block,rgb),5);}
-    catch(Exception e){log("Live preview D"+(index+1)+": "+e.getMessage());js("liveError("+index+")");}
-   }}finally{previewRunning[index].set(false);if(!destroyed&&!busy.get()&&liveAllowed&&hasPreview(index))schedulePreview(index);}
-  });}catch(RejectedExecutionException ignored){previewRunning[index].set(false);}
+ private boolean hasAnyPreview(){synchronized(previewLock){for(int i=0;i<4;i++)if(pendingPreview[i]!=null)return true;return false;}}
+
+ // Interleaved round-robin live preview: transmits block-by-block across all displays so they refresh simultaneously.
+ private void schedulePreview(){
+  if(destroyed||busy.get()||!liveAllowed||!previewRunning.compareAndSet(false,true))return;
+  try{previewWorker.execute(()->{
+   try{while(!destroyed&&!busy.get()&&liveAllowed){
+    byte[][] frames=new byte[4][];boolean hasData=false;
+    synchronized(previewLock){for(int i=0;i<4;i++){frames[i]=pendingPreview[i];pendingPreview[i]=null;if(frames[i]!=null)hasData=true;}}
+    if(!hasData)break;
+    // Step 1: Send FRAME header to each display that has new tile data
+    for(int i=0;i<4;i++){
+     if(!liveAllowed||busy.get()||destroyed)break;
+     if(frames[i]!=null&&isReady(i)){
+      try{write(i,FRAME,2);}catch(Exception e){log("Live D"+(i+1)+": "+e.getMessage());js("liveError("+i+")");}
+     }
+    }
+    // Step 2: Send blocks 0 to 7 round-robin across displays so all displays receive their final block in lockstep
+    for(int block=0;block<8;block++){
+     if(!liveAllowed||busy.get()||destroyed)break;
+     for(int i=0;i<4;i++){
+      if(!liveAllowed||busy.get()||destroyed)break;
+      if(frames[i]!=null&&isReady(i)){
+       try{write(i,livePacket(block,frames[i]),2);}catch(Exception e){log("Live D"+(i+1)+": "+e.getMessage());js("liveError("+i+")");}
+      }
+     }
+    }
+   }}finally{previewRunning.set(false);if(!destroyed&&!busy.get()&&liveAllowed&&hasAnyPreview())schedulePreview();}
+  });}catch(RejectedExecutionException ignored){previewRunning.set(false);}
  }
- private void scheduleAllPreviews(){for(int index=0;index<4;index++)schedulePreview(index);}
+
  private Future<Void> submitLane(int index,LaneTask task){return lanes[index].submit(()->{task.run();return null;});}
  private void await(Future<?> future) throws Exception {try{future.get();}catch(ExecutionException e){Throwable cause=e.getCause();if(cause instanceof Exception)throw (Exception)cause;throw new Exception(cause);}catch(InterruptedException e){Thread.currentThread().interrupt();throw e;}}
- // Used only by the coordinator. Finish old preview frames on ALL lanes before a storage/play operation.
- private void waitForIdleLanes() throws Exception {List<Future<Void>> barriers=new ArrayList<>();for(int index=0;index<4;index++)barriers.add(submitLane(index,()->{}));for(Future<Void> barrier:barriers)await(barrier);checkCancel();}
+ // Finish old preview frames and lane tasks on ALL devices before a storage or play operation.
+ private void waitForIdleLanes() throws Exception {
+  List<Future<Void>> barriers=new ArrayList<>();
+  barriers.add(previewWorker.submit(()->null));
+  for(int index=0;index<4;index++)barriers.add(submitLane(index,()->{}));
+  for(Future<Void> barrier:barriers)await(barrier);
+  checkCancel();
+ }
  private void operate(Runnable task){
   if(!busy.compareAndSet(false,true)){log("Operation already running");return;}cancelled=false;clearPreviews();js("setBusy(true)");ui.post(()->getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
   coordinator.execute(()->{try{task.run();}finally{busy.set(false);js("setBusy(false)");ui.post(()->getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));}});
@@ -133,11 +172,11 @@ public class MainActivity extends Activity {
   @JavascriptInterface public void connectDisplay(int index,String address){ui.post(()->{if(!busy.get())cancelled=false;connect(index,address);});}
   @JavascriptInterface public void disconnect(){liveAllowed=false;clearPreviews();ui.post(()->{cancelled=true;stopScan();for(int index=0;index<4;index++)close(index);});}
   @JavascriptInterface public void cancel(){cancelled=true;log("Cancel requested; previous storage changes cannot be undone.");}
-  @JavascriptInterface public void setLive(boolean enabled){liveAllowed=enabled;if(!enabled)clearPreviews();else if(!busy.get()){cancelled=false;scheduleAllPreviews();}}
+  @JavascriptInterface public void setLive(boolean enabled){liveAllowed=enabled;if(!enabled)clearPreviews();else if(!busy.get()){cancelled=false;schedulePreview();}}
   @JavascriptInterface public void preview(String text){
    if(!liveAllowed||busy.get()||destroyed)return;
    try{JSONArray array=new JSONArray(text);if(array.length()!=4)return;byte[][] incoming=new byte[4][];for(int index=0;index<4;index++)if(!array.isNull(index)){incoming[index]=Base64.decode(array.getString(index),Base64.DEFAULT);if(incoming[index].length!=768)throw new IOException("Invalid preview tile");}
-    synchronized(previewLock){if(!liveAllowed||busy.get()||destroyed)return;for(int index=0;index<4;index++)if(incoming[index]!=null)pendingPreview[index]=incoming[index];}scheduleAllPreviews();
+    synchronized(previewLock){if(!liveAllowed||busy.get()||destroyed)return;for(int index=0;index<4;index++)if(incoming[index]!=null)pendingPreview[index]=incoming[index];}schedulePreview();
    }catch(Exception e){log("Preview rejected: "+e.getMessage());}
   }
   @JavascriptInterface public void upload(String text,boolean replace){operate(()->{
@@ -147,7 +186,7 @@ public class MainActivity extends Activity {
     byte[][][] rgb=new byte[4][count][];
     for(int display:targets){Link link=links.get(display);if(link==null||!link.ready)throw new Exception("D"+(display+1)+" must be ready");for(int frame=0;frame<count;frame++){rgb[display][frame]=Base64.decode(array.getJSONArray(frame).getString(display),Base64.DEFAULT);if(rgb[display][frame].length!=768)throw new Exception("Invalid tile");}}
     waitForIdleLanes();
-    // Same clear order, sequential image commands, packet formats and delays as v0.4.
+    // Sequential clear and upload per display
     int total=targets.size()*count*12+(replace?targets.size():0),done=0;
     if(replace)for(int display:targets){final int index=display;log("Clearing D"+(index+1));await(submitLane(index,()->write(index,CLEAR,1000)));done++;js("progress("+done+","+total+")");}
     for(int display:targets){for(int frame=0;frame<count;frame++){
@@ -163,21 +202,16 @@ public class MainActivity extends Activity {
   @JavascriptInterface public void playSelected(String text){liveAllowed=false;clearPreviews();operate(()->{
    try{JSONArray requested=new JSONArray(text);if(requested.length()<1||requested.length()>4)throw new Exception("Choose 1–4 displays");List<Integer> targets=new ArrayList<>();
     for(int i=0;i<requested.length();i++){int index=requested.getInt(i);if(index<0||index>3||targets.contains(index))throw new Exception("Invalid or duplicate destination");Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect D"+(index+1)+" first");targets.add(index);}
-    waitForIdleLanes();CountDownLatch startGate=new CountDownLatch(1);List<Future<Void>> starts=new ArrayList<>();
-    try{for(int index:targets)starts.add(submitLane(index,()->{startGate.await();write(index,PLAY,0);}));}finally{startGate.countDown();}
-    int failures=0;for(int i=0;i<starts.size();i++){try{await(starts.get(i));}catch(Exception e){failures++;log("Stored slideshow start D"+(targets.get(i)+1)+": "+e.getMessage());}}
-    js("notify("+JSONObject.quote(failures==0?"Selected slideshow start commands dispatched together.":failures+" slideshow start command(s) failed. See Logs.")+")");
+    waitForIdleLanes();
+    for(int index:targets)fastWrite(index,PLAY);
+    js("notify('Selected slideshow start commands dispatched.')");
    }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
   });}
   @JavascriptInterface public void playAll(){liveAllowed=false;clearPreviews();operate(()->{
    try{for(int index=0;index<4;index++){Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect all four displays first");}
     waitForIdleLanes();
-    // Queue all four starts before releasing the gate. No 200-ms inter-device sleeps.
-    CountDownLatch startGate=new CountDownLatch(1);List<Future<Void>> starts=new ArrayList<>();
-    try{for(int display=0;display<4;display++){final int index=display;starts.add(submitLane(index,()->{startGate.await();write(index,PLAY,0);}));}}
-    finally{startGate.countDown();}
-    int failures=0;for(int index=0;index<starts.size();index++){try{await(starts.get(index));}catch(Exception e){failures++;log("Stored slideshow start D"+(index+1)+": "+e.getMessage());}}
-    js("notify("+JSONObject.quote(failures==0?"Stored slideshow start commands dispatched together.":failures+" slideshow start command(s) failed. See Logs.")+")");
+    for(int index=0;index<4;index++)fastWrite(index,PLAY);
+    js("notify('Stored slideshow start commands dispatched.')");
    }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
   });}
   @JavascriptInterface public void exportLibrary(String text){ui.post(()->{if(pendingExport!=null)return;pendingExport=text;Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("application/json");intent.putExtra(Intent.EXTRA_TITLE,"four-display-library.json");try{startActivityForResult(intent,82);}catch(Exception e){pendingExport=null;log(e.toString());}});}
@@ -191,5 +225,5 @@ public class MainActivity extends Activity {
  }
  @Override public void onBackPressed(){web.evaluateJavascript("handleBack()",value->{if(!"true".equals(value))super.onBackPressed();});}
  @Override protected void onPause(){super.onPause();js("pausePlayback();flushDraft()");}
- @Override protected void onDestroy(){destroyed=true;cancelled=true;liveAllowed=false;clearPreviews();stopScan();for(int index=0;index<4;index++)close(index);coordinator.shutdownNow();for(ExecutorService lane:lanes)lane.shutdownNow();ui.removeCallbacksAndMessages(null);if(picker!=null)picker.onReceiveValue(null);web.destroy();super.onDestroy();}
+ @Override protected void onDestroy(){destroyed=true;cancelled=true;liveAllowed=false;clearPreviews();stopScan();for(int index=0;index<4;index++)close(index);coordinator.shutdownNow();previewWorker.shutdownNow();for(ExecutorService lane:lanes)lane.shutdownNow();ui.removeCallbacksAndMessages(null);if(picker!=null)picker.onReceiveValue(null);web.destroy();super.onDestroy();}
 }
