@@ -71,7 +71,20 @@ public class MainActivity extends Activity {
  private void stopScan(){try{if(scanner!=null)scanner.stopScan(scanCallback);}catch(Exception ignored){}}
  private final Runnable stopScanTask=()->{stopScan();js("scanFinished()");};
  private final ScanCallback scanCallback=new ScanCallback(){
-  @Override public void onScanResult(int type,ScanResult result){try{BluetoothDevice device=result.getDevice();if(!found.add(device.getAddress()))return;String name=device.getName();js("deviceFound("+JSONObject.quote(device.getAddress())+","+JSONObject.quote(name==null?"Unnamed BLE device":name)+")");}catch(Exception e){log(e.toString());}}
+  @Override public void onScanResult(int type,ScanResult result){
+   try{
+    BluetoothDevice device=result.getDevice();
+    if(device==null)return;
+    String name=device.getName();
+    android.bluetooth.le.ScanRecord record=result.getScanRecord();
+    String recordName=record!=null?record.getDeviceName():null;
+    String displayName=name!=null&&!name.isEmpty()?name:(recordName!=null&&!recordName.isEmpty()?recordName:"");
+    String search=(displayName+" "+device.getAddress()).toLowerCase(java.util.Locale.ROOT);
+    if(!search.contains("mi matrix display"))return;
+    if(!found.add(device.getAddress()))return;
+    js("deviceFound("+JSONObject.quote(device.getAddress())+","+JSONObject.quote(displayName.isEmpty()?"MI Matrix Display":displayName)+")");
+   }catch(Exception e){log(e.toString());}
+  }
   @Override public void onScanFailed(int error){log("Scan failed: "+error);js("scanFinished()");}
  };
  private void close(int index){Link link=links.getAndSet(index,null);if(link!=null){link.ready=false;if(link.pending!=null)link.pending.countDown();try{link.gatt.disconnect();link.gatt.close();}catch(Exception ignored){}}status(index,"Disconnected");}
