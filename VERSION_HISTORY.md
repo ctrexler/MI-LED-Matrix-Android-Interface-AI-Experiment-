@@ -8,6 +8,12 @@
 - Heart, star, circle, square, diamond, triangle, arrow, dots, diamond-band and zigzag patterns.
 - Up to eight palette colors, size, rotation, outline and spacing controls where relevant.
 - About page, version history and storage records in backups.
+- Synchronized Live Preview and Library playback using interleaved round-robin block transmission, parallel RGB tile conversion, and zero-delay playback dispatch.
+- Synchronized stored slideshow start dispatch and enabled high-priority Bluetooth connection parameters.
+- Pattern editor now includes step management controls (Remove pattern, Delete entire step, Move earlier, Move later).
+- Pattern color palette supports drag-rearranging (pointer capture and HTML5 drag) plus quick-tap ◀ / ▶ shift buttons.
+- Default pattern and shape size changed to 4 pixels.
+- Animated GIF import with bundled pure-JS decoder (capped at 25 frames), live animation preview with adjustable speed, frame reordering/deletion/restoration, and group-aware step replacement.
 - Original Append packet encoding, command order and delays retained.
 - Diagnostic launcher, gated slideshow starts, application ID and optional signing retained.
 
