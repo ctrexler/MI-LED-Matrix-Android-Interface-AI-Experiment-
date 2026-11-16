@@ -10,7 +10,7 @@ const imageCache=new Map();
 const extraPatterns=['heart','star','circle','square','diamond','triangle','arrow','diamonds','dots','zigzag'];
 
 const blankFrame=()=>({id:uid(),mode:'panels',source:null,panels:[null,null,null,null],tiles:['','','','']});
-const blankSequence=()=>({id:uid(),name:'New sequence',cols:db.layout,steps:[]});
+const blankSequence=()=>({id:uid(),name:'New sequence',cols:db.layout,steps:[],gifGroups:{}});
 const imageSpec=src=>({type:'image',src,fit:db.defaults.fit,smooth:db.defaults.smooth});
 const patternSpec=()=>({type:'pattern',pattern:'gradient',a:'#ff3377',b:'#3377ff',colors:['#ff3377','#3377ff'],background:'#000000',direction:'diagonal',size:4,thickness:1,rotation:0,tiled:false,outline:false,spacing:0});
 const imageData=t=>typeof t==='string'&&t.length<=24_000_000&&/^data:image\/(png|jpeg|webp|gif|bmp|avif);base64,[A-Za-z0-9+/=]+$/.test(t);
@@ -37,13 +37,26 @@ function normalizeSource(s){
   return {type:'pattern',pattern:s.pattern,a,b,colors,background,direction,rotation,tiled,outline,spacing,size,thickness};
  }
  if(!imageData(s.src)||!['contain','cover','stretch'].includes(s.fit)||typeof s.smooth!=='boolean')throw Error('Invalid image');
- return {type:'image',src:s.src,fit:s.fit,smooth:s.smooth};
+ let img={type:'image',src:s.src,fit:s.fit,smooth:s.smooth};
+ if(typeof s.gifGroupId==='string')img.gifGroupId=s.gifGroupId;
+ if(typeof s.gifFrameId==='string')img.gifFrameId=s.gifFrameId;
+ return img;
 }
 
 function normalizeSequence(s){
  if(!s||typeof s.name!=='string'||!Array.isArray(s.steps)||s.steps.length>200)throw Error('Invalid sequence');
  let cols=[1,2,4].includes(s.cols)?s.cols:2;
- return {id:typeof s.id==='string'?s.id:uid(),name:s.name.slice(0,100),cols,steps:s.steps.map(f=>{
+ let gifGroups={};
+ if(s.gifGroups&&typeof s.gifGroups==='object'&&!Array.isArray(s.gifGroups)){
+  for(let [gid,g] of Object.entries(s.gifGroups)){
+   if(!g||typeof g!=='object'||!Array.isArray(g.frames)||g.frames.length>25)continue;
+   let target=g.target==='span'?'span':([0,1,2,3].includes(Number(g.target))?Number(g.target):'span');
+   let fit=['contain','cover','stretch'].includes(g.fit)?g.fit:'contain';
+   let frames=g.frames.filter(fr=>fr&&typeof fr==='object'&&imageData(fr.src)).map(fr=>({id:typeof fr.id==='string'?fr.id:uid(),src:fr.src,deleted:!!fr.deleted}));
+   if(frames.length)gifGroups[gid]={id:gid,target,fit,smooth:!!g.smooth,frames};
+  }
+ }
+ return {id:typeof s.id==='string'?s.id:uid(),name:s.name.slice(0,100),cols,gifGroups,steps:s.steps.map(f=>{
   if(!f||!Array.isArray(f.tiles)||f.tiles.length!==4||f.tiles.some(t=>t!==''&&!imageData(t)))throw Error('Invalid rendered tiles');
   if(!f.mode&&!f.kind)return {id:uid(),mode:'panels',source:null,panels:f.tiles.map(t=>t?{type:'image',src:t,fit:'contain',smooth:false}:null),tiles:f.tiles.slice()};
   let mode=f.mode||(f.kind==='wall'?'span':'panels');
@@ -352,14 +365,107 @@ function updateLibraryPlayback(){
 
 function changeSpeed(delta){db.previewSeconds=Math.max(.1,Math.min(30,Math.round((db.previewSeconds+delta)*10)/10));let p=playback?{kind:playback.kind,sequence:playback.sequence}:null;pausePlayback();renderPreview();draftSoon();if(p)startPlayback(p.kind,p.sequence);}
 
+function decodeGif(buffer,maxFrames=25){
+ let b=new Uint8Array(buffer),p=0;
+ const u16=o=>b[o]|(b[o+1]<<8);
+ const hdr=String.fromCharCode(b[0],b[1],b[2],b[3],b[4],b[5]);
+ if(hdr!=='GIF87a'&&hdr!=='GIF89a')throw Error('Not a valid GIF');
+ let width=u16(6),height=u16(8),packed=b[10];p=13;
+ if(width<1||height<1)throw Error('Invalid GIF dimensions');
+ let gct=null;
+ if(packed&0x80){let sz=1<<((packed&7)+1);gct=b.subarray(p,p+sz*3);p+=sz*3;}
+ const readBlocks=()=>{let chunks=[],total=0;while(p<b.length){let len=b[p++];if(!len)break;chunks.push(b.subarray(p,p+len));total+=len;p+=len;}let out=new Uint8Array(total),off=0;for(let c of chunks){out.set(c,off);off+=c.length;}return out;};
+ const lzw=(minSize,data,count)=>{
+  let clear=1<<minSize,eoi=clear+1,size=minSize+1,nextCode=eoi+1,mask=(1<<size)-1;
+  let prefix=new Int16Array(4096),suffix=new Uint8Array(4096),stack=new Uint8Array(4096);
+  let out=new Uint8Array(count),outPos=0,bitBuf=0,bitCnt=0,bytePos=0,oldCode=-1,firstChar=0;
+  const reset=()=>{size=minSize+1;nextCode=eoi+1;mask=(1<<size)-1;oldCode=-1;};
+  const readCode=()=>{
+   while(bitCnt<size){if(bytePos>=data.length)return -1;bitBuf|=data[bytePos++]<<bitCnt;bitCnt+=8;}
+   let code=bitBuf&mask;bitBuf>>=size;bitCnt-=size;return code;
+  };
+  while(outPos<count){
+   let code=readCode();
+   if(code<0||code===eoi)break;
+   if(code===clear){reset();continue;}
+   if(oldCode===-1){if(code<clear){out[outPos++]=code;firstChar=code;oldCode=code;}continue;}
+   let cur=code,sp=0;
+   if(cur>=nextCode){stack[sp++]=firstChar;cur=oldCode;}
+   while(cur>=clear&&sp<4095){stack[sp++]=suffix[cur];cur=prefix[cur];}
+   firstChar=cur&0xff;stack[sp++]=firstChar;
+   while(sp>0&&outPos<count)out[outPos++]=stack[--sp];
+   if(nextCode<4096){
+    prefix[nextCode]=oldCode;suffix[nextCode]=firstChar;nextCode++;
+    if(nextCode>mask&&size<12){size++;mask=(1<<size)-1;}
+   }
+   oldCode=code;
+  }
+  return out;
+ };
+ const deinterlace=(px,w,h)=>{
+  let out=new Uint8Array(px.length),row=0;
+  for(let [start,step] of [[0,8],[4,8],[2,4],[1,2]])for(let y=start;y<h;y+=step){out.set(px.subarray(row*w,(row+1)*w),y*w);row++;}
+  return out;
+ };
+ let comp=document.createElement('canvas');comp.width=width;comp.height=height;
+ let ctx=comp.getContext('2d'),fc=document.createElement('canvas'),fctx=fc.getContext('2d');
+ let outScale=Math.min(1,256/Math.max(width,height)),oc=document.createElement('canvas');
+ oc.width=Math.max(1,Math.round(width*outScale));oc.height=Math.max(1,Math.round(height*outScale));
+ let octx=oc.getContext('2d'),frames=[],truncated=false,gce={disposal:0,trans:false,transIdx:0};
+ while(p<b.length){
+  let sep=b[p++];
+  if(sep===0x3B)break;
+  if(sep===0x21){
+   let label=b[p++];
+   if(label===0xF9){
+    let blk=readBlocks();
+    if(blk.length>=4){gce.disposal=(blk[0]>>2)&7;gce.trans=!!(blk[0]&1);gce.transIdx=blk[3];}
+   }else readBlocks();
+  }else if(sep===0x2C){
+   if(frames.length>=maxFrames){truncated=true;break;}
+   let left=u16(p),top=u16(p+2),w=u16(p+4),h=u16(p+6),ip=b[p+8];p+=9;
+   let ct=gct;if(ip&0x80){let sz=1<<((ip&7)+1);ct=b.subarray(p,p+sz*3);p+=sz*3;}
+   let minCode=b[p++],raw=readBlocks();
+   if(!ct||w<1||h<1){gce={disposal:0,trans:false,transIdx:0};continue;}
+   let idx=lzw(minCode,raw,w*h);if(ip&0x40)idx=deinterlace(idx,w,h);
+   let prev=gce.disposal===3?ctx.getImageData(0,0,width,height):null;
+   fc.width=w;fc.height=h;
+   let imgData=fctx.createImageData(w,h),d=imgData.data;
+   for(let i=0;i<w*h;i++){
+    let ci=idx[i];
+    if(gce.trans&&ci===gce.transIdx)continue;
+    let o=i*4,co=ci*3;
+    d[o]=ct[co];d[o+1]=ct[co+1];d[o+2]=ct[co+2];d[o+3]=255;
+   }
+   fctx.putImageData(imgData,0,0);ctx.drawImage(fc,left,top);
+   octx.clearRect(0,0,oc.width,oc.height);octx.drawImage(comp,0,0,oc.width,oc.height);
+   frames.push(oc.toDataURL('image/png'));
+   if(gce.disposal===2)ctx.clearRect(left,top,w,h);
+   else if(gce.disposal===3&&prev)ctx.putImageData(prev,0,0);
+   gce={disposal:0,trans:false,transIdx:0};
+  }else break;
+ }
+ return {frames,truncated};
+}
+
 function pickImage(callback){if(busy||working)return;pickerCallback=callback;$('imagePicker').value='';$('imagePicker').click();}
 async function onPicked(e){
  let file=e.target.files[0];if(!file)return;
  let callback=pickerCallback;pickerCallback=null;if(!callback)return;
  if(file.size>12*1024*1024)return notify('Choose an image under 12 MB.');
- if(!/^image\/(png|jpeg|webp|gif|bmp|avif)$/.test(file.type))return notify('Choose PNG, JPEG, WebP, GIF, BMP or AVIF.');
+ let isGif=file.type==='image/gif'||/\.gif$/i.test(file.name||'');
+ if(!isGif&&!/^image\/(png|jpeg|webp|bmp|avif)$/.test(file.type))return notify('Choose PNG, JPEG, WebP, GIF, BMP or AVIF.');
  working=true;
  try{
+  if(isGif){
+   let buf=await file.arrayBuffer(),res=decodeGif(buf,25);
+   if(res.frames.length>1){
+    working=false;
+    callback({type:'gif',frames:res.frames.map(src=>({id:uid(),src,deleted:false})),truncated:res.truncated});
+    return;
+   }
+   if(res.frames.length===1){working=false;callback(imageSpec(res.frames[0]));return;}
+  }
   let data=await new Promise((ok,no)=>{let r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(file);}),img=await loadImage(data),scale=Math.min(1,1600/Math.max(img.width,img.height)),c=document.createElement('canvas');
   c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));
   c.getContext('2d').drawImage(img,0,0,c.width,c.height);
@@ -369,12 +475,216 @@ async function onPicked(e){
 }
 
 function chooseType(callback){openSheet('Add image or pattern');let b=$('sheetBody');b.append(hint('Choose a gallery image or create a color pattern.'));buttons(b,[['Choose image',()=>pickImage(callback),'primary'],['Create pattern',()=>callback(patternSpec())]]);}
-function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');b.append(hint('Add one image across the wall, or place it on one display.'));const choose=target=>{let f=blankFrame();if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary']]);if(s.type==='pattern')buttons(b,[['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
-function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
+function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');b.append(hint('Add one image across the wall, or place it on one display.'));const choose=target=>{if(s.type==='gif'){openGifEditor({groupId:null,target,insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let f=blankFrame();if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary']]);if(s.type==='pattern')buttons(b,[['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
+function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;let src=f.mode!=='panels'?f.source:f.panels[index];if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){let g=current.gifGroups[src.gifGroupId];openGifEditor({groupId:g.id,target:g.target,insertIndex:current.steps.indexOf(f),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,truncated:false});return;}if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{if(s.type==='gif'){openGifEditor({groupId:null,target:index,insertIndex:current.steps.indexOf(f),isNew:false,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
+
+function openGifEditor(opts){
+ let groupId=opts.groupId,target=opts.target,insertIndex=opts.insertIndex,frames=clone(opts.frames),fit=opts.fit||db.defaults.fit,smooth=!!opts.smooth;
+ openSheet(groupId?'Edit GIF animation':'Preview GIF frames');
+ let session={gif:true,playing:true,animIdx:0,timer:null,rev:0};editorSession=session;
+ const b=$('sheetBody');
+ if(opts.truncated)b.append(hint('GIF has more than 25 frames; showing the first 25 frames.'));
+ b.append(hint((target==='span'?'Spanning all 4 displays':'Display '+(target+1))+' · Tap a frame to preview, ◀/▶ to reorder, ✕ to delete or ↺ to restore.'));
+ let previewBox=el('div',undefined,'gifPreviewBox');
+ let previewWrap=el('div',undefined,target==='span'?'gifPreviewWall':'gifPreviewSingle');
+ let previewControls=el('div',undefined,'gifPreviewControls');
+ let statusLine=el('b','Frame 1');
+ let speedRow=el('div',undefined,'controls');
+ let playBtn=button('Pause',()=>{session.playing=!session.playing;playBtn.textContent=session.playing?'Pause':'Play';if(session.playing)scheduleTick();else clearTimeout(session.timer);});
+ let speedLabel=el('span',db.previewSeconds.toFixed(1)+' s');
+ let slower=button('+',()=>{changeGifSpeed(0.1);}),faster=button('−',()=>{changeGifSpeed(-0.1);});
+ function changeGifSpeed(delta){
+  db.previewSeconds=Math.max(.1,Math.min(30,Math.round((db.previewSeconds+delta)*10)/10));
+  speedLabel.textContent=db.previewSeconds.toFixed(1)+' s';
+  draftSoon();renderPreview();
+  if(session.playing){clearTimeout(session.timer);scheduleTick();}
+ }
+ speedRow.append(playBtn,faster,speedLabel,slower);
+ previewControls.append(statusLine,speedRow);
+ previewBox.append(previewWrap,previewControls);
+ b.append(previewBox);
+
+ let fitSel=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],fit);
+ fitSel.onchange=()=>{fit=fitSel.value;renderAll();};
+ let smoothChk=document.createElement('input');smoothChk.type='checkbox';smoothChk.checked=smooth;
+ smoothChk.onchange=()=>{smooth=smoothChk.checked;renderAll();};
+ let checkLbl=el('label',undefined,'check');checkLbl.append(smoothChk,document.createTextNode('Smooth resizing'));
+ b.append(field('Image fitting',fitSel),checkLbl);
+
+ let grid=el('div',undefined,'gifFramesGrid');
+ b.append(grid);
+
+ let renderedFrames=[];
+ async function buildPreviewStep(src){
+  let f=blankFrame(),spec={type:'image',src,fit,smooth};
+  if(target==='span'){f.mode='span';f.source=spec;}
+  else{f.mode='panels';f.panels[target]=spec;}
+  await regenerate(f);
+  return f;
+ }
+ function activeIndices(){return frames.map((fr,i)=>fr.deleted?-1:i).filter(i=>i>=0);}
+ function drawAnimFrame(){
+  let act=activeIndices();
+  if(!act.length){
+   previewWrap.replaceChildren(hint('No active frames'));
+   statusLine.textContent='0 active frames';
+   return;
+  }
+  if(session.animIdx>=act.length)session.animIdx=0;
+  let fi=act[session.animIdx],rf=renderedFrames[fi];
+  if(!rf)return;
+  if(target==='span'){
+   let w=makeWall(rf,db.layout,false);
+   previewWrap.replaceChildren(w);
+  }else{
+   let w=el('div',undefined,'wall');w.style.gridTemplateColumns='1fr';
+   let t=el('div',undefined,'tile');
+   if(rf.tiles[target]){let img=document.createElement('img');img.src=rf.tiles[target];img.alt='';t.append(img);}
+   w.append(t);previewWrap.replaceChildren(w);
+  }
+  statusLine.textContent='Frame '+(session.animIdx+1)+' / '+act.length+' (#'+(fi+1)+')';
+  grid.querySelectorAll('.gifFrameCard').forEach((n,i)=>n.classList.toggle('active',i===fi));
+  if(live)queueTiles(rf.tiles,target==='span'?[0,1,2,3]:[target],false,true);
+ }
+ function scheduleTick(){
+  clearTimeout(session.timer);
+  if(editorSession!==session||!session.playing)return;
+  session.timer=setTimeout(()=>{
+   if(editorSession!==session||!session.playing)return;
+   let act=activeIndices();
+   if(act.length){session.animIdx=(session.animIdx+1)%act.length;drawAnimFrame();}
+   scheduleTick();
+  },db.previewSeconds*1000);
+ }
+ async function renderAll(){
+  let rev=++session.rev;
+  renderedFrames=await Promise.all(frames.map(fr=>buildPreviewStep(fr.src)));
+  if(editorSession!==session||rev!==session.rev)return;
+  grid.replaceChildren();
+  frames.forEach((fr,i)=>{
+   let card=el('div',undefined,'gifFrameCard'+(fr.deleted?' deleted':''));
+   let top=el('div',undefined,'gifFrameTop');
+   top.append(el('span','#'+(i+1)),el('span',fr.deleted?'Deleted':''));
+   let preview;
+   if(target==='span'){preview=makeWall(renderedFrames[i],db.layout,false);}
+   else{
+    preview=el('div',undefined,'wall');preview.style.gridTemplateColumns='1fr';
+    let t=el('div',undefined,'tile');
+    if(renderedFrames[i].tiles[target]){let img=document.createElement('img');img.src=renderedFrames[i].tiles[target];img.alt='';t.append(img);}
+    preview.append(t);
+   }
+   let actRow=el('div',undefined,'gifFrameActions');
+   let mvL=button('◀',e=>{e.stopPropagation();if(i===0)return;[frames[i-1],frames[i]]=[frames[i],frames[i-1]];renderAll();});mvL.disabled=i===0;mvL.title='Move earlier';
+   let mvR=button('▶',e=>{e.stopPropagation();if(i===frames.length-1)return;[frames[i+1],frames[i]]=[frames[i],frames[i+1]];renderAll();});mvR.disabled=i===frames.length-1;mvR.title='Move later';
+   let del=button(fr.deleted?'↺':'✕',e=>{e.stopPropagation();fr.deleted=!fr.deleted;renderAll();});del.title=fr.deleted?'Restore frame':'Delete frame';
+   actRow.append(mvL,mvR,del);
+   card.append(top,preview,actRow);
+   card.onclick=()=>{
+    if(fr.deleted)return;
+    let act=activeIndices(),pos=act.indexOf(i);
+    if(pos>=0){session.animIdx=pos;drawAnimFrame();}
+   };
+   grid.append(card);
+  });
+  drawAnimFrame();
+ }
+
+ buttons(b,[['Cancel',()=>{clearTimeout(session.timer);closeSheet(true);}],['Apply',async()=>{
+  if(working||busy)return;
+  let act=frames.filter(fr=>!fr.deleted);
+  if(!groupId&&!act.length)return notify('Keep at least one frame to apply.');
+  clearTimeout(session.timer);working=true;
+  try{
+   await applyGifGroup({groupId,target,insertIndex,frames,fit,smooth});
+   db.defaults={fit,smooth};
+   working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
+  }catch(e){notify(e.message);}finally{working=false;}
+ },'primary']]);
+ if(groupId){
+  b.append(el('div',undefined,'separator'));
+  buttons(b,[['Remove GIF from sequence',async()=>{
+   if(working||busy||!confirm('Remove all frames of this GIF from the sequence?'))return;
+   clearTimeout(session.timer);working=true;
+   try{
+    frames.forEach(fr=>fr.deleted=true);
+    await applyGifGroup({groupId,target,insertIndex,frames,fit,smooth});
+    working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
+   }catch(e){notify(e.message);}finally{working=false;}
+  },'danger']]);
+ }
+ renderAll().then(()=>{if(editorSession===session&&session.playing)scheduleTick();});
+}
+
+async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
+ if(!current.gifGroups)current.gifGroups={};
+ let gid=groupId||uid();
+ let active=frames.filter(fr=>!fr.deleted);
+ let existing=[];
+ if(groupId){
+  current.steps.forEach((f,idx)=>{
+   let match=target==='span'?(f.mode==='span'&&f.source&&f.source.gifGroupId===gid):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===gid);
+   if(match)existing.push(idx);
+  });
+ }
+ let startIdx=existing.length?existing[0]:Math.max(0,Math.min(insertIndex,current.steps.length));
+ let slots=[];
+ if(existing.length){
+  for(let k=0;k<active.length;k++){
+   if(k<existing.length)slots.push(existing[k]);
+   else slots.push(existing[existing.length-1]+1+(k-existing.length));
+  }
+ }else{
+  for(let k=0;k<active.length;k++)slots.push(startIdx+k);
+ }
+ if(slots.length&&slots[slots.length-1]>=200)throw Error('Exceeds maximum 200 steps in sequence.');
+ while(slots.length&&current.steps.length<=slots[slots.length-1])current.steps.push(blankFrame());
+
+ for(let k=0;k<active.length;k++){
+  let step=current.steps[slots[k]];
+  let srcObj={type:'image',src:active[k].src,fit,smooth,gifGroupId:gid,gifFrameId:active[k].id};
+  if(target==='span'){
+   step.mode='span';step.source=srcObj;step.panels=[null,null,null,null];
+  }else{
+   if(step.mode!=='panels'){
+    let oldTiles=step.tiles.slice();
+    step.mode='panels';step.source=null;
+    step.panels=[0,1,2,3].map(p=>p===target?null:(oldTiles[p]?{type:'image',src:oldTiles[p],fit:'contain',smooth:false}:null));
+   }
+   step.panels[target]=srcObj;
+  }
+  await regenerate(step);
+ }
+
+ if(existing.length>active.length){
+  let toClean=existing.slice(active.length).sort((a,b)=>b-a);
+  for(let idx of toClean){
+   let step=current.steps[idx];
+   if(target==='span'){
+    current.steps.splice(idx,1);
+   }else{
+    step.panels[target]=null;step.tiles[target]='';
+    if(step.panels.every(p=>p===null))current.steps.splice(idx,1);
+   }
+  }
+ }
+
+ if(active.length){
+  current.gifGroups[gid]={id:gid,target,fit,smooth,frames:clone(frames)};
+  selected=Math.min(startIdx,Math.max(0,current.steps.length-1));
+ }else{
+  delete current.gifGroups[gid];
+  selected=Math.min(selected,Math.max(0,current.steps.length-1));
+ }
+}
 
 function editSource(frame,target,isNew){
  let src=typeof target==='string'?frame.source:frame.panels[target];
  if(src&&src.type==='pattern'){advancedPattern(frame,target,isNew,src);return;}
+ if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){
+  let g=current.gifGroups[src.gifGroupId],idx=current.steps.findIndex(x=>x.id===frame.id);
+  openGifEditor({groupId:g.id,target:g.target,insertIndex:idx>=0?idx:0,isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,truncated:false});
+  return;
+ }
  openSheet(isNew?'New step':'Edit image / pattern');let session={frame,target,isNew,revision:0};editorSession=session;const b=$('sheetBody');
  let tools=el('div',undefined,'advancedPattern');tools.append(button('Use shapes / advanced patterns',()=>advancedPattern(frame,target,isNew,patternSpec())));b.append(tools);
  let s=clone(src);const settings=el('div');b.append(settings);
@@ -383,12 +693,21 @@ function editSource(frame,target,isNew){
  b.append(placementField,hint('Span makes one continuous wall. Repeat restarts the pattern on every panel. Moving a wall source to one panel clears the other panels.'),view);
  function candidate(){let f=clone(frame),dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);if(typeof dest==='string'){f.mode=dest;f.source=clone(s);f.panels=[null,null,null,null];}else{if(typeof target==='string')f.panels=[null,null,null,null];else if(dest!==target)f.panels[target]=null;f.mode='panels';f.source=null;f.panels[dest]=clone(s);}return f;}
  async function refresh(){let revision=++session.revision;try{let f=candidate();await regenerate(f);if(editorSession!==session||revision!==session.revision)return;session.rendered=f;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));let mask=(!isNew&&frame.mode==='panels'&&f.mode==='panels'&&String(target)===placement.value)?[Number(target)]:[0,1,2,3];queueTiles(f.tiles,mask);}catch(e){notify(e.message);}}
+ function onChosenImage(next){
+  if(next.type==='gif'){
+   let dest=placement.value==='repeat'?'span':(placement.value==='span'?'span':Number(placement.value));
+   let idx=current.steps.findIndex(x=>x.id===frame.id);
+   openGifEditor({groupId:null,target:dest,insertIndex:idx>=0?idx:current.steps.length,isNew,frames:next.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:next.truncated});
+   return;
+  }
+  s=next;resetPlacement();rebuildSettings();refresh();
+ }
  function rebuildSettings(){settings.replaceChildren();if(s.type==='image'){
-  let img=el('img',undefined,'sourcePreview');img.src=s.src;img.alt='Source image';settings.append(img);buttons(settings,[['Change image',()=>pickImage(next=>{s=next;rebuildSettings();refresh();})],['Use pattern',()=>{s=patternSpec();resetPlacement();rebuildSettings();refresh();}]]);
+  let img=el('img',undefined,'sourcePreview');img.src=s.src;img.alt='Source image';settings.append(img);buttons(settings,[['Change image',()=>pickImage(onChosenImage)],['Use pattern',()=>{s=patternSpec();resetPlacement();rebuildSettings();refresh();}]]);
   let fit=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],s.fit);fit.onchange=()=>{s.fit=fit.value;refresh();};let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=s.smooth;smooth.onchange=()=>{s.smooth=smooth.checked;refresh();};let check=el('label',undefined,'check');check.append(smooth,document.createTextNode('Smooth resizing'));settings.append(field('Image fitting',fit),check);
  }else{
   let type=select([['solid','Solid color'],['gradient','Gradient'],['checker','Checkerboard'],['stripes','Stripes'],['border','Border']],s.pattern);type.onchange=()=>{s.pattern=type.value;rebuildSettings();refresh();};settings.append(field('Pattern',type));
-  let colors=el('div',undefined,'colorRow');for(let key of ['a','b']){if(key==='b'&&s.pattern==='solid')continue;let input=document.createElement('input');input.type='color';input.value=s[key];input.oninput=()=>{s[key]=input.value;refresh();};let label=el('label',key==='a'?'Color 1':'Color 2');label.append(input);colors.append(label);}settings.append(colors);buttons(settings,[['Swap colors',()=>{[s.a,s.b]=[s.b,s.a];rebuildSettings();refresh();}],['Use image',()=>pickImage(next=>{s=next;resetPlacement();rebuildSettings();refresh();})]]);
+  let colors=el('div',undefined,'colorRow');for(let key of ['a','b']){if(key==='b'&&s.pattern==='solid')continue;let input=document.createElement('input');input.type='color';input.value=s[key];input.oninput=()=>{s[key]=input.value;refresh();};let label=el('label',key==='a'?'Color 1':'Color 2');label.append(input);colors.append(label);}settings.append(colors);buttons(settings,[['Swap colors',()=>{[s.a,s.b]=[s.b,s.a];rebuildSettings();refresh();}],['Use image',()=>pickImage(onChosenImage)]]);
   if(['gradient','stripes'].includes(s.pattern)){let direction=select([['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Top-left to bottom-right'],['antidiagonal','Top-right to bottom-left']],s.direction);direction.onchange=()=>{s.direction=direction.value;refresh();};settings.append(field('Direction',direction));}
   if(['checker','stripes','border'].includes(s.pattern)){let key=s.pattern==='border'?'thickness':'size',n=document.createElement('input');n.id='patternSize';n.type='number';n.min=1;n.max=key==='thickness'?8:16;n.value=s[key];n.oninput=()=>{s[key]=Math.max(1,Math.min(Number(n.max),Math.round(Number(n.value)||1)));refresh();};settings.append(field(s.pattern==='checker'?'Square size (pixels)':s.pattern==='stripes'?'Stripe width (pixels)':'Border thickness (pixels)',n));}
  }}
