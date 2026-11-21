@@ -14,6 +14,8 @@
 - Pattern color palette supports drag-rearranging (pointer capture and HTML5 drag) plus quick-tap ◀ / ▶ shift buttons.
 - Default pattern and shape size changed to 4 pixels.
 - Animated GIF import with bundled pure-JS decoder (capped at 25 frames), live animation preview with adjustable speed, frame reordering/deletion/restoration, and group-aware step replacement.
+- Display color calibration sliders (Gamma, Dark cutoff, Brightness) in Displays applied during RGB hardware encoding.
+- Repeat on all four displays option enabled for images, animated GIFs, and patterns.
 - Original Append packet encoding, command order and delays retained.
 - Diagnostic launcher, gated slideshow starts, application ID and optional signing retained.
 

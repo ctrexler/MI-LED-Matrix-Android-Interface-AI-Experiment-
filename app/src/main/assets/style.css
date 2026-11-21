@@ -67,3 +67,10 @@
 .gifFrameTop{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--muted)}
 .gifFrameActions{display:flex;gap:3px;justify-content:space-between}
 .gifFrameActions button{flex:1;min-height:28px;padding:2px 4px;font-size:11px;border-radius:6px}
+.calibrationCard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:14px}
+.calibrationHead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.calibrationHead button{min-height:32px;padding:4px 10px;font-size:12px}
+.calRow{display:flex;flex-direction:column;gap:4px;margin-top:10px;font-size:12px}
+.calRow span{display:flex;justify-content:space-between;color:var(--muted)}
+.calRow b{color:var(--text)}
+.calRow input[type=range]{width:100%;padding:0;border:0;background:transparent;accent-color:var(--accent)}

@@ -1,7 +1,7 @@
 "use strict";
 const APP_VERSION='0.5.0';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
-let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},previewSeconds:1.5,draft:null,stored:{}};
+let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
 let states=['Not connected','Not connected','Not connected','Not connected'],ready=[false,false,false,false];
 let playback=null,playTimer=null,frameEpoch=0,liveTimer=null,pendingTiles=[undefined,undefined,undefined,undefined],lastTiles=[undefined,undefined,undefined,undefined],liveVersions=[0,0,0,0];
@@ -50,7 +50,7 @@ function normalizeSequence(s){
  if(s.gifGroups&&typeof s.gifGroups==='object'&&!Array.isArray(s.gifGroups)){
   for(let [gid,g] of Object.entries(s.gifGroups)){
    if(!g||typeof g!=='object'||!Array.isArray(g.frames)||g.frames.length>25)continue;
-   let target=g.target==='span'?'span':([0,1,2,3].includes(Number(g.target))?Number(g.target):'span');
+   let target=(g.target==='span'||g.target==='repeat')?g.target:([0,1,2,3].includes(Number(g.target))?Number(g.target):'span');
    let fit=['contain','cover','stretch'].includes(g.fit)?g.fit:'contain';
    let frames=g.frames.filter(fr=>fr&&typeof fr==='object'&&imageData(fr.src)).map(fr=>({id:typeof fr.id==='string'?fr.id:uid(),src:fr.src,deleted:!!fr.deleted}));
    if(frames.length)gifGroups[gid]={id:gid,target,fit,smooth:!!g.smooth,frames};
@@ -310,10 +310,23 @@ async function regenerate(f,cols=db.layout){
  }else for(let i=0;i<4;i++)f.tiles[i]=f.panels[i]?(await renderSource(f.panels[i],16,16)).toDataURL('image/png'):'';
 }
 
+function calibrationLut(){
+ let cal=db.calibration||{gamma:2.2,cutoff:0,brightness:100};
+ let gamma=Math.max(1,Math.min(3,Number(cal.gamma)||2.2));
+ let cutoff=Math.max(0,Math.min(40,Math.round(Number(cal.cutoff)||0)));
+ let bright=Math.max(.1,Math.min(1,(Number(cal.brightness)||100)/100));
+ let lut=new Uint8Array(256);
+ for(let v=0;v<256;v++){
+  if(v<=cutoff)lut[v]=0;
+  else lut[v]=Math.max(0,Math.min(255,Math.round(Math.pow(v/255,gamma)*bright*255)));
+ }
+ return lut;
+}
+
 async function rgbTile(t){
  let c=canvas(16,16);if(t)c.getContext('2d').drawImage(await loadImage(t),0,0,16,16);
- let a=c.getContext('2d').getImageData(0,0,16,16).data,b='';
- for(let i=0;i<256;i++)b+=String.fromCharCode(a[i*4],a[i*4+1],a[i*4+2]);
+ let a=c.getContext('2d').getImageData(0,0,16,16).data,lut=calibrationLut(),b='';
+ for(let i=0;i<256;i++)b+=String.fromCharCode(lut[a[i*4]],lut[a[i*4+1]],lut[a[i*4+2]]);
  return btoa(b);
 }
 
@@ -475,7 +488,7 @@ async function onPicked(e){
 }
 
 function chooseType(callback){openSheet('Add image or pattern');let b=$('sheetBody');b.append(hint('Choose a gallery image or create a color pattern.'));buttons(b,[['Choose image',()=>pickImage(callback),'primary'],['Create pattern',()=>callback(patternSpec())]]);}
-function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');b.append(hint('Add one image across the wall, or place it on one display.'));const choose=target=>{if(s.type==='gif'){openGifEditor({groupId:null,target,insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let f=blankFrame();if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary']]);if(s.type==='pattern')buttons(b,[['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
+function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');b.append(hint('Add one image across the wall, repeat it on every display, or place it on one display.'));const choose=target=>{if(s.type==='gif'){openGifEditor({groupId:null,target,insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let f=blankFrame();if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary'],['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
 function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;let src=f.mode!=='panels'?f.source:f.panels[index];if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){let g=current.gifGroups[src.gifGroupId];openGifEditor({groupId:g.id,target:g.target,insertIndex:current.steps.indexOf(f),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,truncated:false});return;}if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{if(s.type==='gif'){openGifEditor({groupId:null,target:index,insertIndex:current.steps.indexOf(f),isNew:false,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
 
 function openGifEditor(opts){
@@ -484,9 +497,9 @@ function openGifEditor(opts){
  let session={gif:true,playing:true,animIdx:0,timer:null,rev:0};editorSession=session;
  const b=$('sheetBody');
  if(opts.truncated)b.append(hint('GIF has more than 25 frames; showing the first 25 frames.'));
- b.append(hint((target==='span'?'Spanning all 4 displays':'Display '+(target+1))+' · Tap a frame to preview, ◀/▶ to reorder, ✕ to delete or ↺ to restore.'));
+ b.append(hint((target==='span'?'Spanning all 4 displays':target==='repeat'?'Repeating on all 4 displays':'Display '+(target+1))+' · Tap a frame to preview, ◀/▶ to reorder, ✕ to delete or ↺ to restore.'));
  let previewBox=el('div',undefined,'gifPreviewBox');
- let previewWrap=el('div',undefined,target==='span'?'gifPreviewWall':'gifPreviewSingle');
+ let previewWrap=el('div',undefined,(target==='span'||target==='repeat')?'gifPreviewWall':'gifPreviewSingle');
  let previewControls=el('div',undefined,'gifPreviewControls');
  let statusLine=el('b','Frame 1');
  let speedRow=el('div',undefined,'controls');
@@ -517,7 +530,7 @@ function openGifEditor(opts){
  let renderedFrames=[];
  async function buildPreviewStep(src){
   let f=blankFrame(),spec={type:'image',src,fit,smooth};
-  if(target==='span'){f.mode='span';f.source=spec;}
+  if(target==='span'||target==='repeat'){f.mode=target;f.source=spec;}
   else{f.mode='panels';f.panels[target]=spec;}
   await regenerate(f);
   return f;
@@ -533,7 +546,7 @@ function openGifEditor(opts){
   if(session.animIdx>=act.length)session.animIdx=0;
   let fi=act[session.animIdx],rf=renderedFrames[fi];
   if(!rf)return;
-  if(target==='span'){
+  if(target==='span'||target==='repeat'){
    let w=makeWall(rf,db.layout,false);
    previewWrap.replaceChildren(w);
   }else{
@@ -544,7 +557,7 @@ function openGifEditor(opts){
   }
   statusLine.textContent='Frame '+(session.animIdx+1)+' / '+act.length+' (#'+(fi+1)+')';
   grid.querySelectorAll('.gifFrameCard').forEach((n,i)=>n.classList.toggle('active',i===fi));
-  if(live)queueTiles(rf.tiles,target==='span'?[0,1,2,3]:[target],false,true);
+  if(live)queueTiles(rf.tiles,(target==='span'||target==='repeat')?[0,1,2,3]:[target],false,true);
  }
  function scheduleTick(){
   clearTimeout(session.timer);
@@ -566,7 +579,7 @@ function openGifEditor(opts){
    let top=el('div',undefined,'gifFrameTop');
    top.append(el('span','#'+(i+1)),el('span',fr.deleted?'Deleted':''));
    let preview;
-   if(target==='span'){preview=makeWall(renderedFrames[i],db.layout,false);}
+   if(target==='span'||target==='repeat'){preview=makeWall(renderedFrames[i],db.layout,false);}
    else{
     preview=el('div',undefined,'wall');preview.style.gridTemplateColumns='1fr';
     let t=el('div',undefined,'tile');
@@ -622,7 +635,7 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
  let existing=[];
  if(groupId){
   current.steps.forEach((f,idx)=>{
-   let match=target==='span'?(f.mode==='span'&&f.source&&f.source.gifGroupId===gid):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===gid);
+   let match=(target==='span'||target==='repeat')?(f.mode===target&&f.source&&f.source.gifGroupId===gid):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===gid);
    if(match)existing.push(idx);
   });
  }
@@ -642,8 +655,8 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
  for(let k=0;k<active.length;k++){
   let step=current.steps[slots[k]];
   let srcObj={type:'image',src:active[k].src,fit,smooth,gifGroupId:gid,gifFrameId:active[k].id};
-  if(target==='span'){
-   step.mode='span';step.source=srcObj;step.panels=[null,null,null,null];
+  if(target==='span'||target==='repeat'){
+   step.mode=target;step.source=srcObj;step.panels=[null,null,null,null];
   }else{
    if(step.mode!=='panels'){
     let oldTiles=step.tiles.slice();
@@ -659,7 +672,7 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
   let toClean=existing.slice(active.length).sort((a,b)=>b-a);
   for(let idx of toClean){
    let step=current.steps[idx];
-   if(target==='span'){
+   if(target==='span'||target==='repeat'){
     current.steps.splice(idx,1);
    }else{
     step.panels[target]=null;step.tiles[target]='';
@@ -688,14 +701,14 @@ function editSource(frame,target,isNew){
  openSheet(isNew?'New step':'Edit image / pattern');let session={frame,target,isNew,revision:0};editorSession=session;const b=$('sheetBody');
  let tools=el('div',undefined,'advancedPattern');tools.append(button('Use shapes / advanced patterns',()=>advancedPattern(frame,target,isNew,patternSpec())));b.append(tools);
  let s=clone(src);const settings=el('div');b.append(settings);
- let placement=select([['span','Span across all four'],...(s.type==='pattern'?[['repeat','Repeat on all four']]:[]),['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],target);
+ let placement=select([['span','Span across all four'],['repeat','Repeat on all four'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],target);
  let placementField=field('Placement',placement);let view=el('div',undefined,'wall miniPreview');
- b.append(placementField,hint('Span makes one continuous wall. Repeat restarts the pattern on every panel. Moving a wall source to one panel clears the other panels.'),view);
+ b.append(placementField,hint('Span makes one continuous wall. Repeat duplicates it on every panel. Moving a wall source to one panel clears the other panels.'),view);
  function candidate(){let f=clone(frame),dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);if(typeof dest==='string'){f.mode=dest;f.source=clone(s);f.panels=[null,null,null,null];}else{if(typeof target==='string')f.panels=[null,null,null,null];else if(dest!==target)f.panels[target]=null;f.mode='panels';f.source=null;f.panels[dest]=clone(s);}return f;}
  async function refresh(){let revision=++session.revision;try{let f=candidate();await regenerate(f);if(editorSession!==session||revision!==session.revision)return;session.rendered=f;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));let mask=(!isNew&&frame.mode==='panels'&&f.mode==='panels'&&String(target)===placement.value)?[Number(target)]:[0,1,2,3];queueTiles(f.tiles,mask);}catch(e){notify(e.message);}}
  function onChosenImage(next){
   if(next.type==='gif'){
-   let dest=placement.value==='repeat'?'span':(placement.value==='span'?'span':Number(placement.value));
+   let dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);
    let idx=current.steps.findIndex(x=>x.id===frame.id);
    openGifEditor({groupId:null,target:dest,insertIndex:idx>=0?idx:current.steps.length,isNew,frames:next.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:next.truncated});
    return;
@@ -711,7 +724,7 @@ function editSource(frame,target,isNew){
   if(['gradient','stripes'].includes(s.pattern)){let direction=select([['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Top-left to bottom-right'],['antidiagonal','Top-right to bottom-left']],s.direction);direction.onchange=()=>{s.direction=direction.value;refresh();};settings.append(field('Direction',direction));}
   if(['checker','stripes','border'].includes(s.pattern)){let key=s.pattern==='border'?'thickness':'size',n=document.createElement('input');n.id='patternSize';n.type='number';n.min=1;n.max=key==='thickness'?8:16;n.value=s[key];n.oninput=()=>{s[key]=Math.max(1,Math.min(Number(n.max),Math.round(Number(n.value)||1)));refresh();};settings.append(field(s.pattern==='checker'?'Square size (pixels)':s.pattern==='stripes'?'Stripe width (pixels)':'Border thickness (pixels)',n));}
  }}
- function resetPlacement(){let old=placement.value;let n=select([['span','Span across all four'],...(s.type==='pattern'?[['repeat','Repeat on all four']]:[]),['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],old==='repeat'&&s.type==='image'?'span':old);let chosen=n.value;placement.replaceChildren(...Array.from(n.children));placement.value=chosen;}
+ function resetPlacement(){let old=placement.value;let n=select([['span','Span across all four'],['repeat','Repeat on all four'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],old);let chosen=n.value;placement.replaceChildren(...Array.from(n.children));placement.value=chosen;}
  placement.onchange=refresh;rebuildSettings();buttons(b,[['Cancel',()=>closeSheet(true)],['Done',async()=>{if(working||busy)return;let f=candidate();if(typeof target!=='string'&&f.mode!=='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace the other panel images with this source?'))return;working=true;try{await regenerate(f);if(isNew){current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');current.steps[i]=f;selected=i;}if(s.type==='image')db.defaults={fit:s.fit,smooth:s.smooth};working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
  if(!isNew){b.append(el('div',undefined,'separator'));buttons(b,[['Remove image',()=>{if(!confirm('Remove this image or pattern?'))return;let i=current.steps.findIndex(f=>f.id===frame.id);if(i<0)return;if(typeof target==='string')current.steps[i]={...blankFrame(),id:frame.id};else{current.steps[i].panels[target]=null;current.steps[i].tiles[target]='';}closeSheet(false);changed();renderEditor();previewCurrent(true);},'danger'],['Delete entire step',()=>deleteStep(frame.id),'danger']]);buttons(b,[['Move earlier',()=>{closeSheet();moveStep(frame.id,-1);}],['Move later',()=>{closeSheet();moveStep(frame.id,1);}]]);}
  refresh();
@@ -837,7 +850,7 @@ function validStorage(value){
 
 function exportLibrary(){
  if(busy||working)return;flushDraft();
- Native.exportLibrary(JSON.stringify({version:3,appVersion:APP_VERSION,layout:db.layout,previewSeconds:db.previewSeconds,defaults:db.defaults,sequences:db.sequences,draft:db.draft,stored:db.stored}));
+ Native.exportLibrary(JSON.stringify({version:3,appVersion:APP_VERSION,layout:db.layout,previewSeconds:db.previewSeconds,defaults:db.defaults,calibration:db.calibration,sequences:db.sequences,draft:db.draft,stored:db.stored}));
  notify('Backup includes library, draft, and storage records keyed by display Bluetooth address. Assignments are not changed on import.');
 }
 
@@ -1071,6 +1084,13 @@ async function init(){
    if([1,2,4].includes(v.layout))db.layout=v.layout;
    if(v.editorView&&['all','separate'].includes(v.editorView))db.editorView=v.editorView;
    if(v.defaults&&['contain','cover','stretch'].includes(v.defaults.fit))db.defaults={fit:v.defaults.fit,smooth:!!v.defaults.smooth};
+   if(v.calibration&&typeof v.calibration==='object'){
+    db.calibration={
+     gamma:Math.max(1,Math.min(3,Number(v.calibration.gamma)||2.2)),
+     cutoff:Math.max(0,Math.min(40,Math.round(Number(v.calibration.cutoff)||0))),
+     brightness:Math.max(10,Math.min(100,Math.round(Number(v.calibration.brightness)||100)))
+    };
+   }
    if(Number.isFinite(v.previewSeconds))db.previewSeconds=Math.max(.1,Math.min(30,v.previewSeconds));
    if(v.draft&&v.draft.sequence){
     current=normalizeSequence(v.draft.sequence);
@@ -1112,6 +1132,21 @@ async function init(){
  $('liveToggle').onchange=()=>setLive($('liveToggle').checked);
  $('layout').value=db.layout;
  $('layout').onchange=changeLayout;
+ function syncCalUI(){
+  let cal=db.calibration||{gamma:2.2,cutoff:0,brightness:100};
+  if($('gammaSlider')){$('gammaSlider').value=cal.gamma;$('gammaVal').textContent=Number(cal.gamma).toFixed(1);}
+  if($('cutoffSlider')){$('cutoffSlider').value=cal.cutoff;$('cutoffVal').textContent=String(cal.cutoff);}
+  if($('brightSlider')){$('brightSlider').value=cal.brightness;$('brightVal').textContent=cal.brightness+'%';}
+ }
+ function updateCal(saveNow){
+  db.calibration={gamma:Number($('gammaSlider').value),cutoff:Number($('cutoffSlider').value),brightness:Number($('brightSlider').value)};
+  syncCalUI();
+  if(saveNow)store();else draftSoon();
+  if(live)previewCurrent(true);
+ }
+ syncCalUI();
+ if($('gammaSlider'))['gammaSlider','cutoffSlider','brightSlider'].forEach(id=>{$(id).oninput=()=>updateCal(false);$(id).onchange=()=>updateCal(true);});
+ bind('calResetBtn',()=>{db.calibration={gamma:2.2,cutoff:0,brightness:100};syncCalUI();store();if(live)previewCurrent(true);notify('Calibration reset to defaults.');});
  $('imagePicker').onchange=onPicked;
  $('largePreview').onclick=e=>{let panel=e.target.closest('[data-panel]');if(panel&&current.steps[selected]&&!busy&&!working){pausePlayback();openSource(current.steps[selected].id,Number(panel.dataset.panel));}};
  document.addEventListener('pointermove',dragMove,{passive:false});
