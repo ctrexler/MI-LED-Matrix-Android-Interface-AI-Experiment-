@@ -42,10 +42,14 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+          BASE_VERSION=$(sed -n "s/.*'\([0-9][0-9.]*\)'.*/\1/p" app/build.gradle | tail -n1)
+          BASE_VERSION=${BASE_VERSION:-0.8.0}
+          APP_VER="${BASE_VERSION} (build ${GITHUB_RUN_NUMBER})"
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "APP_VER=$APP_VER" >> "$GITHUB_ENV"
           test -f settings.gradle
           test -f app/build.gradle
-          gradle --no-daemon :app:assembleDebug -PappVersionCode=$VERSION_CODE -PappVersionName=0.5.${{ github.run_number }}
+          gradle --no-daemon :app:assembleDebug -PappVersionCode=$VERSION_CODE -PappVersionName="$BASE_VERSION"
           cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/LED-Matrix-Controller.apk
       - uses: actions/upload-artifact@v4
         with:
@@ -56,10 +60,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest Build (#${{ github.run_number }})
+          name: v${{ env.APP_VER }}
           body: |
             versionCode:${{ env.VERSION_CODE }}
-            versionName:0.5.${{ github.run_number }}
+            versionName:${{ env.APP_VER }}
             Commit: ${{ github.sha }}
           files: app/build/outputs/apk/debug/LED-Matrix-Controller.apk
           make_latest: true
