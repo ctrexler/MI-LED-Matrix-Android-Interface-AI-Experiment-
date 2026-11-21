@@ -313,12 +313,15 @@ async function regenerate(f,cols=db.layout){
 function calibrationLut(){
  let cal=db.calibration||{gamma:2.2,cutoff:0,brightness:100};
  let gamma=Math.max(1,Math.min(3,Number(cal.gamma)||2.2));
- let cutoff=Math.max(0,Math.min(40,Math.round(Number(cal.cutoff)||0)));
+ let cutoff=Math.max(0,Math.min(128,Math.round(Number(cal.cutoff)||0)));
  let bright=Math.max(.1,Math.min(1,(Number(cal.brightness)||100)/100));
- let lut=new Uint8Array(256);
+ let lut=new Uint8Array(256),span=255-cutoff;
  for(let v=0;v<256;v++){
   if(v<=cutoff)lut[v]=0;
-  else lut[v]=Math.max(0,Math.min(255,Math.round(Math.pow(v/255,gamma)*bright*255)));
+  else{
+   let norm=(v-cutoff)/span;
+   lut[v]=Math.max(0,Math.min(255,Math.round(Math.pow(norm,gamma)*bright*255)));
+  }
  }
  return lut;
 }
@@ -1087,7 +1090,7 @@ async function init(){
    if(v.calibration&&typeof v.calibration==='object'){
     db.calibration={
      gamma:Math.max(1,Math.min(3,Number(v.calibration.gamma)||2.2)),
-     cutoff:Math.max(0,Math.min(40,Math.round(Number(v.calibration.cutoff)||0))),
+     cutoff:Math.max(0,Math.min(128,Math.round(Number(v.calibration.cutoff)||0))),
      brightness:Math.max(10,Math.min(100,Math.round(Number(v.calibration.brightness)||100)))
     };
    }
