@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, master]
 permissions:
-  contents: read
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -40,12 +40,25 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VERSION_CODE: ${{ 100 + github.run_number }}
         run: |
           test -f settings.gradle
           test -f app/build.gradle
-          gradle --no-daemon :app:assembleDebug
+          gradle --no-daemon :app:assembleDebug -PappVersionCode=${VERSION_CODE} -PappVersionName=0.5.${{ github.run_number }}
+          cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/debug/LED-Matrix-Controller.apk
       - uses: actions/upload-artifact@v4
         with:
           name: LED-Matrix-Controller-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/LED-Matrix-Controller.apk
           retention-days: 7
+      - name: Publish rolling latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build (#${{ github.run_number }})
+          body: |
+            versionCode:${{ 100 + github.run_number }}
+            versionName:0.5.${{ github.run_number }}
+            Commit: ${{ github.sha }}
+          files: app/build/outputs/apk/debug/LED-Matrix-Controller.apk
+          make_latest: true

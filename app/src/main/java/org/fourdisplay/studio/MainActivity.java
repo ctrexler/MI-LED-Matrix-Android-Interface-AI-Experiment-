@@ -229,6 +229,75 @@ public class MainActivity extends Activity {
   });}
   @JavascriptInterface public void exportLibrary(String text){ui.post(()->{if(pendingExport!=null)return;pendingExport=text;Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("application/json");intent.putExtra(Intent.EXTRA_TITLE,"four-display-library.json");try{startActivityForResult(intent,82);}catch(Exception e){pendingExport=null;log(e.toString());}});}
   @JavascriptInterface public void importLibrary(){ui.post(()->{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("*/*");try{startActivityForResult(intent,83);}catch(Exception e){log(e.toString());}});}
+  @JavascriptInterface public void checkUpdate(boolean silent){
+   new Thread(()->{
+    try{
+     java.net.URL url=new java.net.URL("https://api.github.com/repos/ctrexler/MI-LED-Matrix-Android-Interface-AI-Experiment-/releases/tags/latest");
+     javax.net.ssl.HttpsURLConnection conn=(javax.net.ssl.HttpsURLConnection)url.openConnection();
+     conn.setConnectTimeout(10000);conn.setReadTimeout(10000);
+     conn.setRequestProperty("Accept","application/vnd.github+json");
+     conn.setRequestProperty("User-Agent","LED-Matrix-Controller");
+     int status=conn.getResponseCode();
+     if(status!=200){if(!silent)js("notify('Update check failed (HTTP "+status+").')");return;}
+     ByteArrayOutputStream out=new ByteArrayOutputStream();
+     try(InputStream in=conn.getInputStream()){byte[] buf=new byte[4096];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);}
+     JSONObject rel=new JSONObject(new String(out.toByteArray(),StandardCharsets.UTF_8));
+     String body=rel.optString("body","");
+     java.util.regex.Matcher mc=java.util.regex.Pattern.compile("versionCode:(\\d+)").matcher(body);
+     if(!mc.find()){if(!silent)js("notify('No release version info found.')");return;}
+     long remoteCode=Long.parseLong(mc.group(1));
+     java.util.regex.Matcher mn=java.util.regex.Pattern.compile("versionName:([^\\s\\r\\n]+)").matcher(body);
+     String remoteName=mn.find()?mn.group(1):"latest";
+     String apkUrl=null;
+     JSONArray assets=rel.optJSONArray("assets");
+     if(assets!=null)for(int i=0;i<assets.length();i++){JSONObject a=assets.getJSONObject(i);if(a.optString("name","").endsWith(".apk")){apkUrl=a.optString("browser_download_url","");break;}}
+     if(apkUrl==null||apkUrl.isEmpty()){if(!silent)js("notify('No APK found in latest release.')");return;}
+     android.content.pm.PackageInfo pi=getPackageManager().getPackageInfo(getPackageName(),0);
+     long currentCode=Build.VERSION.SDK_INT>=28?pi.getLongVersionCode():pi.versionCode;
+     if(remoteCode>currentCode)js("onUpdateAvailable("+remoteCode+","+JSONObject.quote(remoteName)+","+JSONObject.quote(apkUrl)+")");
+     else if(!silent)js("notify('App is up to date (build "+currentCode+").')");
+    }catch(Exception e){if(!silent)js("notify("+JSONObject.quote("Update check failed: "+e.getMessage())+")");else log("Update check: "+e.getMessage());}
+   },"update-check").start();
+  }
+  @JavascriptInterface public void installUpdate(String apkUrl){
+   if(!getPackageManager().canRequestPackageInstalls()){
+    ui.post(()->{
+     js("notify('Allow Install unknown apps for LED Matrix Controller, then tap Update again.')");
+     Intent s=new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+getPackageName()));
+     s.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+     try{startActivity(s);}catch(Exception e){log(e.toString());}
+    });
+    return;
+   }
+   js("notify('Downloading update…')");
+   new Thread(()->{
+    try{
+     String cur=apkUrl;
+     java.net.HttpURLConnection conn=null;
+     for(int hops=0;hops<5;hops++){
+      conn=(java.net.HttpURLConnection)new java.net.URL(cur).openConnection();
+      conn.setConnectTimeout(15000);conn.setReadTimeout(30000);
+      conn.setInstanceFollowRedirects(false);
+      conn.setRequestProperty("User-Agent","LED-Matrix-Controller");
+      int code=conn.getResponseCode();
+      if(code==301||code==302||code==303||code==307||code==308){cur=conn.getHeaderField("Location");conn.disconnect();continue;}
+      break;
+     }
+     if(conn==null||conn.getResponseCode()!=200)throw new IOException("Download failed");
+     File tmp=new File(getCacheDir(),"update.apk.part"),dest=new File(getCacheDir(),"update.apk");
+     try(InputStream in=conn.getInputStream();FileOutputStream fos=new FileOutputStream(tmp)){byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1)fos.write(buf,0,n);}
+     if(dest.exists())dest.delete();
+     if(!tmp.renameTo(dest))throw new IOException("Could not save APK");
+     Uri uri=Uri.parse("content://"+getPackageName()+".apkprovider/update.apk");
+     ui.post(()->{
+      Intent intent=new Intent(Intent.ACTION_VIEW);
+      intent.setDataAndType(uri,"application/vnd.android.package-archive");
+      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_ACTIVITY_NEW_TASK);
+      try{startActivity(intent);}catch(Exception e){js("notify("+JSONObject.quote("Installer failed: "+e.getMessage())+")");}
+     });
+    }catch(Exception e){js("notify("+JSONObject.quote("Update download failed: "+e.getMessage())+")");}
+   },"update-download").start();
+  }
  }
  @Override protected void onActivityResult(int request,int result,Intent data){
   super.onActivityResult(request,result,data);

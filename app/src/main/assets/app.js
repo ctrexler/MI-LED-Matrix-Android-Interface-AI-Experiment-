@@ -1131,6 +1131,7 @@ async function init(){
  bind('reconnectBtn',reconnect);
  bind('disconnectBtn',()=>{pausePlayback();setLive(false);Native.disconnect();});
  bind('clearLogBtn',()=>{$('log').textContent='';});
+ bind('checkUpdateBtn',()=>{if(Native.checkUpdate){notify('Checking for updates…');Native.checkUpdate(false);}else notify('Updates require the Android app.');});
  $('sequenceName').oninput=()=>{current.name=$('sequenceName').value.slice(0,100);changed();};
  $('liveToggle').onchange=()=>setLive($('liveToggle').checked);
  $('layout').value=db.layout;
@@ -1169,6 +1170,11 @@ async function init(){
  document.addEventListener('visibilitychange',()=>{if(document.hidden){pausePlayback();flushDraft();}});
  renderEditor();renderAssignments();updateSaveState();
  log('LED Matrix Controller '+APP_VERSION+' ready. Live Preview starts off; enable it to send temporary images.');
+ setTimeout(()=>{if(Native.checkUpdate)Native.checkUpdate(true);},1500);
+}
+
+function onUpdateAvailable(code,name,url){
+ if(confirm('Update available ('+name+', build '+code+'). Download and install now?'))Native.installUpdate(url);
 }
 
 init();
