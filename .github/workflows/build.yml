@@ -40,12 +40,13 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          VERSION_CODE: ${{ 100 + github.run_number }}
         run: |
+          VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           test -f settings.gradle
           test -f app/build.gradle
-          gradle --no-daemon :app:assembleDebug -PappVersionCode=${VERSION_CODE} -PappVersionName=0.5.${{ github.run_number }}
-          cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/debug/LED-Matrix-Controller.apk
+          gradle --no-daemon :app:assembleDebug -PappVersionCode=$VERSION_CODE -PappVersionName=0.5.${{ github.run_number }}
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/LED-Matrix-Controller.apk
       - uses: actions/upload-artifact@v4
         with:
           name: LED-Matrix-Controller-apk
@@ -57,7 +58,7 @@ jobs:
           tag_name: latest
           name: Latest Build (#${{ github.run_number }})
           body: |
-            versionCode:${{ 100 + github.run_number }}
+            versionCode:${{ env.VERSION_CODE }}
             versionName:0.5.${{ github.run_number }}
             Commit: ${{ github.sha }}
           files: app/build/outputs/apk/debug/LED-Matrix-Controller.apk
