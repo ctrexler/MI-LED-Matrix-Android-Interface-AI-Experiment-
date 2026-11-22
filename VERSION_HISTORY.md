@@ -1,5 +1,10 @@
 # LED Matrix Controller Version History
 
+## 0.9.0 — 2026-11-21
+- Background layer support per step (None, Image, or Custom Pattern/Shapes) with **Apply to all steps**, composited underneath transparent PNGs, animated GIFs, and patterns.
+- Transparent (`∅`) color option for pattern palette colors and shape backgrounds.
+- **Rotate colors across steps** toggle and **Generate full cycle** button on foreground and background patterns.
+
 ## 0.8.0 — 2026-11-21
 - Display color calibration sliders (Gamma, Dark cutoff with black-point remapping, Brightness) applied during hardware RGB encoding without altering saved images.
 - Enabled **Repeat on all four displays** placement for images and animated GIFs in addition to patterns.

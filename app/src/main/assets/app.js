@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION='0.8.0';
+const APP_VERSION='0.9.0';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
@@ -9,11 +9,12 @@ let storedSlot=0,storageDraft=null;
 const imageCache=new Map();
 const extraPatterns=['heart','star','circle','square','diamond','triangle','arrow','diamonds','dots','zigzag'];
 
-const blankFrame=()=>({id:uid(),mode:'panels',source:null,panels:[null,null,null,null],tiles:['','','','']});
+const blankFrame=()=>({id:uid(),mode:'panels',source:null,panels:[null,null,null,null],tiles:['','','',''],bgMode:'none',bgSource:null,bgPanels:[null,null,null,null]});
 const blankSequence=()=>({id:uid(),name:'New sequence',cols:db.layout,steps:[],gifGroups:{}});
 const imageSpec=src=>({type:'image',src,fit:db.defaults.fit,smooth:db.defaults.smooth});
-const patternSpec=()=>({type:'pattern',pattern:'gradient',a:'#ff3377',b:'#3377ff',colors:['#ff3377','#3377ff'],background:'#000000',direction:'diagonal',size:4,thickness:1,rotation:0,tiled:false,outline:false,spacing:0});
+const patternSpec=()=>({type:'pattern',pattern:'gradient',a:'#ff3377',b:'#3377ff',colors:['#ff3377','#3377ff'],background:'#000000',direction:'diagonal',size:4,thickness:1,rotation:0,tiled:false,outline:false,spacing:0,cycle:false});
 const imageData=t=>typeof t==='string'&&t.length<=24_000_000&&/^data:image\/(png|jpeg|webp|gif|bmp|avif);base64,[A-Za-z0-9+/=]+$/.test(t);
+const isColor=c=>c==='transparent'||(typeof c==='string'&&/^#[0-9a-f]{6}$/i.test(c));
 function palette(s){return Array.isArray(s.colors)&&s.colors.length?s.colors:[s.a||'#ff3377',s.b||'#3377ff'];}
 
 function normalizeSource(s){
@@ -23,18 +24,19 @@ function normalizeSource(s){
   const validPatterns=['solid','gradient','checker','stripes','border','diamonds','zigzag','dots','heart','star','circle','square','diamond','triangle','arrow'];
   if(!validPatterns.includes(s.pattern))throw Error('Invalid pattern');
   let colors=Array.isArray(s.colors)?s.colors.slice(0,8):[s.a||'#ff3377',s.b||'#3377ff'];
-  if(colors.length<1||colors.some(c=>typeof c!=='string'||!/^#[0-9a-f]{6}$/i.test(c)))throw Error('Invalid palette');
-  let a=/^#[0-9a-f]{6}$/i.test(s.a||'')?s.a:colors[0];
-  let b=/^#[0-9a-f]{6}$/i.test(s.b||'')?s.b:(colors[1]||colors[0]);
-  let background=/^#[0-9a-f]{6}$/i.test(s.background||'')?s.background:'#000000';
+  if(colors.length<1||colors.some(c=>!isColor(c)))throw Error('Invalid palette');
+  let a=isColor(s.a)?s.a:colors[0];
+  let b=isColor(s.b)?s.b:(colors[1]||colors[0]);
+  let background=isColor(s.background)?s.background:'#000000';
   let direction=['horizontal','vertical','diagonal','antidiagonal'].includes(s.direction)?s.direction:'diagonal';
   let rotation=[0,90,180,270].includes(Number(s.rotation))?Number(s.rotation):0;
   let tiled=!!s.tiled;
   let outline=!!s.outline;
+  let cycle=!!s.cycle;
   let spacing=Math.max(0,Math.min(32,Math.round(Number(s.spacing)||0)));
   let size=Math.max(1,Math.min(64,Math.round(Number(s.size)||4)));
   let thickness=Math.max(1,Math.min(8,Number(s.thickness)||1));
-  return {type:'pattern',pattern:s.pattern,a,b,colors,background,direction,rotation,tiled,outline,spacing,size,thickness};
+  return {type:'pattern',pattern:s.pattern,a,b,colors,background,direction,rotation,tiled,outline,cycle,spacing,size,thickness};
  }
  if(!imageData(s.src)||!['contain','cover','stretch'].includes(s.fit)||typeof s.smooth!=='boolean')throw Error('Invalid image');
  let img={type:'image',src:s.src,fit:s.fit,smooth:s.smooth};
@@ -58,12 +60,16 @@ function normalizeSequence(s){
  }
  return {id:typeof s.id==='string'?s.id:uid(),name:s.name.slice(0,100),cols,gifGroups,steps:s.steps.map(f=>{
   if(!f||!Array.isArray(f.tiles)||f.tiles.length!==4||f.tiles.some(t=>t!==''&&!imageData(t)))throw Error('Invalid rendered tiles');
-  if(!f.mode&&!f.kind)return {id:uid(),mode:'panels',source:null,panels:f.tiles.map(t=>t?{type:'image',src:t,fit:'contain',smooth:false}:null),tiles:f.tiles.slice()};
+  if(!f.mode&&!f.kind)return {id:uid(),mode:'panels',source:null,panels:f.tiles.map(t=>t?{type:'image',src:t,fit:'contain',smooth:false}:null),tiles:f.tiles.slice(),bgMode:'none',bgSource:null,bgPanels:[null,null,null,null]};
   let mode=f.mode||(f.kind==='wall'?'span':'panels');
   if(!['span','repeat','panels'].includes(mode)||!Array.isArray(f.panels)||f.panels.length!==4)throw Error('Invalid step mode');
   let source=normalizeSource(f.source||f.wall),panels=f.panels.map(normalizeSource);
   if(mode!=='panels'&&!source)throw Error('Missing source');
-  return {id:typeof f.id==='string'?f.id:uid(),mode,source,panels,tiles:f.tiles.slice()};
+  let bgMode=['none','span','repeat','panels'].includes(f.bgMode)?f.bgMode:'none';
+  let bgSource=bgMode==='span'||bgMode==='repeat'?normalizeSource(f.bgSource):null;
+  let bgPanels=Array.isArray(f.bgPanels)&&f.bgPanels.length===4?f.bgPanels.map(normalizeSource):[null,null,null,null];
+  if((bgMode==='span'||bgMode==='repeat')&&!bgSource)bgMode='none';
+  return {id:typeof f.id==='string'?f.id:uid(),mode,source,panels,tiles:f.tiles.slice(),bgMode,bgSource,bgPanels};
  })};
 }
 
@@ -211,7 +217,7 @@ function renderPreview(){
 }
 
 function renderEditor(){$('sequenceName').value=current.name;renderGrid();renderPreview();}
-function canvas(w,h){let c=document.createElement('canvas');c.width=w;c.height=h;let x=c.getContext('2d');x.fillStyle='black';x.fillRect(0,0,w,h);return c;}
+function canvas(w,h,transparent=false){let c=document.createElement('canvas');c.width=w;c.height=h;if(!transparent){let x=c.getContext('2d');x.fillStyle='black';x.fillRect(0,0,w,h);}return c;}
 function blackTile(){return canvas(16,16).toDataURL('image/png');}
 
 function loadImage(src){
@@ -234,19 +240,32 @@ function shapePath(x,k,r){
  x.closePath();
 }
 
-function drawPattern(s,w,h){
- let c=canvas(w,h),x=c.getContext('2d'),p=palette(s),size=Math.max(1,Math.round(s.size||4));
+function rotatedPalette(s,stepOffset=0){
+ let p=palette(s);
+ if(s.cycle&&stepOffset>0&&p.length>1){let r=((stepOffset%p.length)+p.length)%p.length;p=p.slice(r).concat(p.slice(0,r));}
+ return p;
+}
+
+function drawPattern(s,w,h,stepOffset=0,transparent=false){
+ let c=canvas(w,h,transparent),x=c.getContext('2d'),p=rotatedPalette(s,stepOffset),size=Math.max(1,Math.round(s.size||4));
  let shapes=['heart','star','circle','square','diamond','triangle','arrow'];
  if(shapes.includes(s.pattern)||s.pattern==='dots'){
-  x.fillStyle=s.background||'#000000';x.fillRect(0,0,w,h);
+  if(s.background!=='transparent'){x.fillStyle=s.background||'#000000';x.fillRect(0,0,w,h);}
   let tiled=s.tiled||s.pattern==='dots',step=size+(s.spacing||0),points=[];
   if(tiled){for(let y=size/2;y<h;y+=Math.max(1,step))for(let z=size/2;z<w;z+=Math.max(1,step))points.push([z,y]);}
   else points=[[w/2,h/2]];
   points.forEach(([z,y],i)=>{
+   let col=p[i%p.length];
    x.save();x.translate(z,y);x.rotate((s.rotation||0)*Math.PI/180);
    shapePath(x,s.pattern==='dots'?'circle':s.pattern,Math.max(.5,size/2-.5));
-   x.fillStyle=x.strokeStyle=p[i%p.length];x.lineWidth=s.thickness||1;
-   if(s.outline)x.stroke();else x.fill();
+   x.lineWidth=s.thickness||1;
+   if(col==='transparent'){
+    x.globalCompositeOperation='destination-out';x.fillStyle=x.strokeStyle='rgba(0,0,0,1)';
+    if(s.outline)x.stroke();else x.fill();
+   }else{
+    x.fillStyle=x.strokeStyle=col;
+    if(s.outline)x.stroke();else x.fill();
+   }
    x.restore();
   });
   return c;
@@ -254,23 +273,24 @@ function drawPattern(s,w,h){
  if(s.pattern==='gradient'){
   let coords=s.direction==='horizontal'?[0,0,w,0]:s.direction==='vertical'?[0,0,0,h]:s.direction==='antidiagonal'?[w,0,0,h]:[0,0,w,h];
   let g=x.createLinearGradient(...coords);
-  if(p.length===1){x.fillStyle=p[0];}
-  else{p.forEach((color,i)=>g.addColorStop(i/(p.length-1),color));x.fillStyle=g;}
+  if(p.length===1){if(p[0]==='transparent')return c;x.fillStyle=p[0];}
+  else{p.forEach((color,i)=>g.addColorStop(i/(p.length-1),color==='transparent'?'rgba(0,0,0,0)':color));x.fillStyle=g;}
   x.fillRect(0,0,w,h);
   return c;
  }
- if(s.pattern==='solid'){x.fillStyle=p[0];x.fillRect(0,0,w,h);return c;}
+ if(s.pattern==='solid'){if(p[0]!=='transparent'){x.fillStyle=p[0];x.fillRect(0,0,w,h);}return c;}
  if(s.pattern==='border'){
   let t=Math.max(1,Math.round(s.thickness||1));
-  x.fillStyle=p[0];x.fillRect(0,0,w,h);
-  x.fillStyle=p[1]||p[0];
-  x.fillRect(0,0,w,t);x.fillRect(0,h-t,w,t);x.fillRect(0,0,t,h);x.fillRect(w-t,0,t,h);
+  if(p[0]!=='transparent'){x.fillStyle=p[0];x.fillRect(t,t,Math.max(0,w-2*t),Math.max(0,h-2*t));}
+  let edge=p[1]||p[0];
+  if(edge!=='transparent'){x.fillStyle=edge;x.fillRect(0,0,w,t);x.fillRect(0,h-t,w,t);x.fillRect(0,t,t,Math.max(0,h-2*t));x.fillRect(w-t,t,t,Math.max(0,h-2*t));}
   return c;
  }
  if(s.pattern==='checker'){
-  x.fillStyle=p[0];x.fillRect(0,0,w,h);
-  x.fillStyle=p[1]||p[0];
-  for(let y=0;y<h;y+=size)for(let z=0;z<w;z+=size)if((Math.floor(y/size)+Math.floor(z/size))%2)x.fillRect(z,y,size,size);
+  for(let y=0;y<h;y+=size)for(let z=0;z<w;z+=size){
+   let col=((Math.floor(y/size)+Math.floor(z/size))%2)?(p[1]||p[0]):p[0];
+   if(col!=='transparent'){x.fillStyle=col;x.fillRect(z,y,size,size);}
+  }
   return c;
  }
  for(let y=0;y<h;y++)for(let z=0;z<w;z++){
@@ -278,16 +298,16 @@ function drawPattern(s,w,h){
   if(s.pattern==='diamonds')n=Math.floor((Math.abs(z-(w-1)/2)+Math.abs(y-(h-1)/2))/size);
   else if(s.pattern==='zigzag')n=Math.floor((y+Math.abs((z%(size*4))-size*2))/size);
   else{let axis=s.direction==='vertical'?z:s.direction==='horizontal'?y:s.direction==='antidiagonal'?z-y+h:z+y;n=Math.floor(axis/size);}
-  x.fillStyle=p[((n%p.length)+p.length)%p.length];
-  x.fillRect(z,y,1,1);
+  let col=p[((n%p.length)+p.length)%p.length];
+  if(col!=='transparent'){x.fillStyle=col;x.fillRect(z,y,1,1);}
  }
  return c;
 }
 
-async function renderSource(s,w,h){
- if(!s)return canvas(w,h);
- if(s.type==='pattern')return drawPattern(s,w,h);
- let c=canvas(w,h),x=c.getContext('2d'),i=await loadImage(s.src);
+async function renderSource(s,w,h,stepOffset=0,transparent=false){
+ if(!s)return canvas(w,h,transparent);
+ if(s.type==='pattern')return drawPattern(s,w,h,stepOffset,transparent);
+ let c=canvas(w,h,transparent),x=c.getContext('2d'),i=await loadImage(s.src);
  x.imageSmoothingEnabled=s.smooth;x.imageSmoothingQuality='high';
  if(s.fit==='stretch')x.drawImage(i,0,0,w,h);
  else{
@@ -297,17 +317,60 @@ async function renderSource(s,w,h){
  return c;
 }
 
-async function regenerate(f,cols=db.layout){
+function sourceCycles(s){return !!(s&&s.type==='pattern'&&s.cycle);}
+function stepCycles(f){
+ if(!f)return false;
+ if((f.mode==='span'||f.mode==='repeat')&&sourceCycles(f.source))return true;
+ if(f.mode==='panels'&&Array.isArray(f.panels)&&f.panels.some(sourceCycles))return true;
+ if((f.bgMode==='span'||f.bgMode==='repeat')&&sourceCycles(f.bgSource))return true;
+ if(f.bgMode==='panels'&&Array.isArray(f.bgPanels)&&f.bgPanels.some(sourceCycles))return true;
+ return false;
+}
+async function refreshCyclingSteps(){
+ for(let i=0;i<current.steps.length;i++)if(stepCycles(current.steps[i]))await regenerate(current.steps[i],db.layout,i);
+}
+
+async function regenerate(f,cols=db.layout,stepIndex=null){
+ let idx=stepIndex!==null?stepIndex:(current?Math.max(0,current.steps.indexOf(f)):0);
+ let bgMode=f.bgMode||'none',bg=[null,null,null,null];
+ if(bgMode==='span'&&f.bgSource){
+  let bc=await renderSource(f.bgSource,cols*16,64/cols,idx,false);
+  for(let i=0;i<4;i++){bg[i]=canvas(16,16,false);bg[i].getContext('2d').drawImage(bc,(i%cols)*16,Math.floor(i/cols)*16,16,16,0,0,16,16);}
+ }else if(bgMode==='repeat'&&f.bgSource){
+  let bc=await renderSource(f.bgSource,16,16,idx,false);
+  for(let i=0;i<4;i++){bg[i]=canvas(16,16,false);bg[i].getContext('2d').drawImage(bc,0,0);}
+ }else if(bgMode==='panels'&&Array.isArray(f.bgPanels)){
+  for(let i=0;i<4;i++)bg[i]=f.bgPanels[i]?await renderSource(f.bgPanels[i],16,16,idx,false):canvas(16,16,false);
+ }else{
+  for(let i=0;i<4;i++)bg[i]=canvas(16,16,false);
+ }
+
  if(f.mode==='span'){
-  let c=await renderSource(f.source,cols*16,64/cols);
+  let c=await renderSource(f.source,cols*16,64/cols,idx,true);
   for(let i=0;i<4;i++){
-   let t=canvas(16,16);t.getContext('2d').drawImage(c,(i%cols)*16,Math.floor(i/cols)*16,16,16,0,0,16,16);
-   f.tiles[i]=t.toDataURL('image/png');
+   bg[i].getContext('2d').drawImage(c,(i%cols)*16,Math.floor(i/cols)*16,16,16,0,0,16,16);
+   f.tiles[i]=bg[i].toDataURL('image/png');
   }
  }else if(f.mode==='repeat'){
-  let t=(await renderSource(f.source,16,16)).toDataURL('image/png');
-  f.tiles=[t,t,t,t];
- }else for(let i=0;i<4;i++)f.tiles[i]=f.panels[i]?(await renderSource(f.panels[i],16,16)).toDataURL('image/png'):'';
+  let fg=await renderSource(f.source,16,16,idx,true);
+  for(let i=0;i<4;i++){
+   bg[i].getContext('2d').drawImage(fg,0,0);
+   f.tiles[i]=bg[i].toDataURL('image/png');
+  }
+ }else{
+  for(let i=0;i<4;i++){
+   let hasBg=bgMode==='span'||bgMode==='repeat'||(bgMode==='panels'&&f.bgPanels&&f.bgPanels[i]);
+   if(f.panels[i]){
+    let fg=await renderSource(f.panels[i],16,16,idx,true);
+    bg[i].getContext('2d').drawImage(fg,0,0);
+    f.tiles[i]=bg[i].toDataURL('image/png');
+   }else if(hasBg){
+    f.tiles[i]=bg[i].toDataURL('image/png');
+   }else{
+    f.tiles[i]='';
+   }
+  }
+ }
 }
 
 function calibrationLut(){
@@ -618,7 +681,10 @@ function openGifEditor(opts){
  },'primary']]);
  if(groupId){
   b.append(el('div',undefined,'separator'));
-  buttons(b,[['Remove GIF from sequence',async()=>{
+  buttons(b,[['Background layer',()=>{
+   let firstStep=current.steps.find(f=>target==='span'||target==='repeat'?(f.mode===target&&f.source&&f.source.gifGroupId===groupId):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===groupId));
+   if(firstStep)openBackgroundEditor(clone(firstStep),true);
+  }],['Remove GIF from sequence',async()=>{
    if(working||busy||!confirm('Remove all frames of this GIF from the sequence?'))return;
    clearTimeout(session.timer);working=true;
    try{
@@ -668,7 +734,7 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
    }
    step.panels[target]=srcObj;
   }
-  await regenerate(step);
+  await regenerate(step,db.layout,slots[k]);
  }
 
  if(existing.length>active.length){
@@ -683,6 +749,7 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
    }
   }
  }
+ await refreshCyclingSteps();
 
  if(active.length){
   current.gifGroups[gid]={id:gid,target,fit,smooth,frames:clone(frames)};
@@ -702,13 +769,13 @@ function editSource(frame,target,isNew){
   return;
  }
  openSheet(isNew?'New step':'Edit image / pattern');let session={frame,target,isNew,revision:0};editorSession=session;const b=$('sheetBody');
- let tools=el('div',undefined,'advancedPattern');tools.append(button('Use shapes / advanced patterns',()=>advancedPattern(frame,target,isNew,patternSpec())));b.append(tools);
+ let tools=el('div',undefined,'advancedPattern');tools.append(button('Use shapes / advanced patterns',()=>advancedPattern(frame,target,isNew,patternSpec())));if(!isNew)tools.append(' ',button('Background layer',()=>openBackgroundEditor(clone(frame))));b.append(tools);
  let s=clone(src);const settings=el('div');b.append(settings);
  let placement=select([['span','Span across all four'],['repeat','Repeat on all four'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],target);
  let placementField=field('Placement',placement);let view=el('div',undefined,'wall miniPreview');
  b.append(placementField,hint('Span makes one continuous wall. Repeat duplicates it on every panel. Moving a wall source to one panel clears the other panels.'),view);
  function candidate(){let f=clone(frame),dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);if(typeof dest==='string'){f.mode=dest;f.source=clone(s);f.panels=[null,null,null,null];}else{if(typeof target==='string')f.panels=[null,null,null,null];else if(dest!==target)f.panels[target]=null;f.mode='panels';f.source=null;f.panels[dest]=clone(s);}return f;}
- async function refresh(){let revision=++session.revision;try{let f=candidate();await regenerate(f);if(editorSession!==session||revision!==session.revision)return;session.rendered=f;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));let mask=(!isNew&&frame.mode==='panels'&&f.mode==='panels'&&String(target)===placement.value)?[Number(target)]:[0,1,2,3];queueTiles(f.tiles,mask);}catch(e){notify(e.message);}}
+ async function refresh(){let revision=++session.revision;try{let f=candidate(),stepIdx=isNew?current.steps.length:Math.max(0,current.steps.findIndex(x=>x.id===f.id));await regenerate(f,db.layout,stepIdx);if(editorSession!==session||revision!==session.revision)return;session.rendered=f;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));let mask=(!isNew&&frame.mode==='panels'&&f.mode==='panels'&&String(target)===placement.value)?[Number(target)]:[0,1,2,3];queueTiles(f.tiles,mask);}catch(e){notify(e.message);}}
  function onChosenImage(next){
   if(next.type==='gif'){
    let dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);
@@ -723,33 +790,79 @@ function editSource(frame,target,isNew){
   let fit=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],s.fit);fit.onchange=()=>{s.fit=fit.value;refresh();};let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=s.smooth;smooth.onchange=()=>{s.smooth=smooth.checked;refresh();};let check=el('label',undefined,'check');check.append(smooth,document.createTextNode('Smooth resizing'));settings.append(field('Image fitting',fit),check);
  }else{
   let type=select([['solid','Solid color'],['gradient','Gradient'],['checker','Checkerboard'],['stripes','Stripes'],['border','Border']],s.pattern);type.onchange=()=>{s.pattern=type.value;rebuildSettings();refresh();};settings.append(field('Pattern',type));
-  let colors=el('div',undefined,'colorRow');for(let key of ['a','b']){if(key==='b'&&s.pattern==='solid')continue;let input=document.createElement('input');input.type='color';input.value=s[key];input.oninput=()=>{s[key]=input.value;refresh();};let label=el('label',key==='a'?'Color 1':'Color 2');label.append(input);colors.append(label);}settings.append(colors);buttons(settings,[['Swap colors',()=>{[s.a,s.b]=[s.b,s.a];rebuildSettings();refresh();}],['Use image',()=>pickImage(onChosenImage)]]);
+  let colors=el('div',undefined,'colorRow');for(let key of ['a','b']){if(key==='b'&&s.pattern==='solid')continue;let isTrans=s[key]==='transparent';let input=document.createElement('input');input.type='color';input.value=isTrans?'#000000':s[key];if(isTrans)input.classList.add('isTransparent');input.oninput=()=>{s[key]=input.value;if(Array.isArray(s.colors))s.colors[key==='a'?0:1]=input.value;refresh();};let tBtn=button('∅',()=>{s[key]=s[key]==='transparent'?'#ffffff':'transparent';if(Array.isArray(s.colors))s.colors[key==='a'?0:1]=s[key];rebuildSettings();refresh();},'colorTransBtn'+(isTrans?' active':''));tBtn.title='Toggle transparent';let label=el('label',key==='a'?'Color 1':'Color 2');label.append(input,tBtn);colors.append(label);}settings.append(colors);buttons(settings,[['Swap colors',()=>{[s.a,s.b]=[s.b,s.a];if(Array.isArray(s.colors)&&s.colors.length>=2)[s.colors[0],s.colors[1]]=[s.colors[1],s.colors[0]];rebuildSettings();refresh();}],['Use image',()=>pickImage(onChosenImage)]]);
   if(['gradient','stripes'].includes(s.pattern)){let direction=select([['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Top-left to bottom-right'],['antidiagonal','Top-right to bottom-left']],s.direction);direction.onchange=()=>{s.direction=direction.value;refresh();};settings.append(field('Direction',direction));}
   if(['checker','stripes','border'].includes(s.pattern)){let key=s.pattern==='border'?'thickness':'size',n=document.createElement('input');n.id='patternSize';n.type='number';n.min=1;n.max=key==='thickness'?8:16;n.value=s[key];n.oninput=()=>{s[key]=Math.max(1,Math.min(Number(n.max),Math.round(Number(n.value)||1)));refresh();};settings.append(field(s.pattern==='checker'?'Square size (pixels)':s.pattern==='stripes'?'Stripe width (pixels)':'Border thickness (pixels)',n));}
+  let cyc=document.createElement('input');cyc.type='checkbox';cyc.checked=!!s.cycle;cyc.onchange=()=>{s.cycle=cyc.checked;refresh();};let cycLbl=el('label',undefined,'check');cycLbl.append(cyc,document.createTextNode('Rotate colors across steps'));settings.append(cycLbl);
  }}
  function resetPlacement(){let old=placement.value;let n=select([['span','Span across all four'],['repeat','Repeat on all four'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],old);let chosen=n.value;placement.replaceChildren(...Array.from(n.children));placement.value=chosen;}
- placement.onchange=refresh;rebuildSettings();buttons(b,[['Cancel',()=>closeSheet(true)],['Done',async()=>{if(working||busy)return;let f=candidate();if(typeof target!=='string'&&f.mode!=='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace the other panel images with this source?'))return;working=true;try{await regenerate(f);if(isNew){current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');current.steps[i]=f;selected=i;}if(s.type==='image')db.defaults={fit:s.fit,smooth:s.smooth};working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
+ placement.onchange=refresh;rebuildSettings();buttons(b,[['Cancel',()=>closeSheet(true)],['Done',async()=>{if(working||busy)return;let f=candidate();if(typeof target!=='string'&&f.mode!=='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace the other panel images with this source?'))return;working=true;try{let idx=isNew?current.steps.length:current.steps.findIndex(x=>x.id===f.id);if(!isNew&&idx<0)throw Error('Step missing');await regenerate(f,db.layout,idx);if(isNew){current.steps.push(f);selected=current.steps.length-1;}else{current.steps[idx]=f;selected=idx;}if(s.type==='image')db.defaults={fit:s.fit,smooth:s.smooth};working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
  if(!isNew){b.append(el('div',undefined,'separator'));buttons(b,[['Remove image',()=>{if(!confirm('Remove this image or pattern?'))return;let i=current.steps.findIndex(f=>f.id===frame.id);if(i<0)return;if(typeof target==='string')current.steps[i]={...blankFrame(),id:frame.id};else{current.steps[i].panels[target]=null;current.steps[i].tiles[target]='';}closeSheet(false);changed();renderEditor();previewCurrent(true);},'danger'],['Delete entire step',()=>deleteStep(frame.id),'danger']]);buttons(b,[['Move earlier',()=>{closeSheet();moveStep(frame.id,-1);}],['Move later',()=>{closeSheet();moveStep(frame.id,1);}]]);}
  refresh();
 }
 
-function advancedPattern(frame,target,isNew,source){
- openSheet('Shapes and multicolor patterns');let b=$('sheetBody'),s=normalizeSource(source),view=el('div',undefined,'wall miniPreview');
+function advancedPattern(frame,target,isNew,source,bgOpts=null){
+ openSheet(bgOpts?'Background pattern':'Shapes and multicolor patterns');let b=$('sheetBody'),s=normalizeSource(source),view=el('div',undefined,'wall miniPreview');
+ if(!bgOpts&&!isNew){let tools=el('div',undefined,'advancedPattern');tools.append(button('Background layer',()=>openBackgroundEditor(clone(frame))));b.append(tools);}
  const opts=[['solid','Solid'],['gradient','Gradient'],['checker','Checkerboard'],['stripes','Stripes'],['border','Border'],['diamonds','Diamond bands'],['zigzag','Zigzag stripes'],['dots','Dots'],['heart','Hearts'],['star','Stars'],['circle','Circles'],['square','Squares'],['diamond','Diamonds'],['triangle','Triangles'],['arrow','Arrows']];
  let type=select(opts,s.pattern),placement=select([['span','Span wall'],['repeat','Repeat on each display'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],target);
  b.append(field('Pattern / shape',type),field('Placement',placement));let controls=el('div');b.append(controls,view);
  let advancedSession={advanced:true};editorSession=advancedSession;let revision=0;
- function candidate(){let f=clone(frame),dest=placement.value;if(dest==='span'||dest==='repeat'){f.mode=dest;f.source=clone(s);f.panels=[null,null,null,null];}else{if(typeof target==='string')f.panels=[null,null,null,null];else if(Number(dest)!==target)f.panels[target]=null;f.mode='panels';f.source=null;f.panels[Number(dest)]=clone(s);}return f;}
- async function refresh(){let rev=++revision;try{let f=candidate();await regenerate(f);if(rev!==revision||editorSession!==advancedSession)return;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));queueTiles(f.tiles);}catch(e){notify(e.message);}}
+ function candidate(){
+  let f=clone(frame),dest=placement.value;
+  if(bgOpts){
+   if(dest==='span'||dest==='repeat'){f.bgMode=dest;f.bgSource=clone(s);f.bgPanels=[null,null,null,null];}
+   else{if(f.bgMode!=='panels')f.bgPanels=[null,null,null,null];f.bgMode='panels';f.bgSource=null;f.bgPanels[Number(dest)]=clone(s);}
+   return f;
+  }
+  if(dest==='span'||dest==='repeat'){f.mode=dest;f.source=clone(s);f.panels=[null,null,null,null];}
+  else{if(typeof target==='string')f.panels=[null,null,null,null];else if(Number(dest)!==target)f.panels[target]=null;f.mode='panels';f.source=null;f.panels[Number(dest)]=clone(s);}
+  return f;
+ }
+ async function refresh(){let rev=++revision;try{let f=candidate(),stepIdx=isNew?current.steps.length:Math.max(0,current.steps.findIndex(x=>x.id===f.id));await regenerate(f,db.layout,stepIdx);if(rev!==revision||editorSession!==advancedSession)return;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));queueTiles(f.tiles);}catch(e){notify(e.message);}}
  function number(label,key,min,max){let n=document.createElement('input');n.type='number';n.min=min;n.max=max;n.value=s[key];n.oninput=()=>{s[key]=Math.max(min,Math.min(max,Math.round(Number(n.value)||min)));refresh();};controls.append(field(label,n));}
- function check(label,key){let n=document.createElement('input');n.type='checkbox';n.checked=!!s[key];n.onchange=()=>{s[key]=n.checked;if(key==='outline')rebuild();refresh();};controls.append(field(label,n));}
+ function check(label,key,onExtra){let n=document.createElement('input');n.type='checkbox';n.checked=!!s[key];n.onchange=()=>{s[key]=n.checked;if(key==='outline'||onExtra)rebuild();refresh();};controls.append(field(label,n));}
  function swapColors(from,to){if(from<0||from>=s.colors.length||to<0||to>=s.colors.length||from===to)return;let [m]=s.colors.splice(from,1);s.colors.splice(to,0,m);s.a=s.colors[0];s.b=s.colors[1]||s.a;rebuild();refresh();}
  let colorDrag=null;
  function startColorDrag(e,index,item){if(e.button!==0&&e.pointerType==='mouse')return;colorDrag={index,item,pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,active:false,targetIndex:index};try{item.setPointerCapture(e.pointerId);}catch(_){}}
  function moveColorDrag(e){if(!colorDrag||e.pointerId!==colorDrag.pointerId)return;if(!colorDrag.active){if(Math.hypot(e.clientX-colorDrag.startX,e.clientY-colorDrag.startY)<5)return;colorDrag.active=true;colorDrag.item.classList.add('dragging');}let hit=document.elementFromPoint(e.clientX,e.clientY),target=hit?hit.closest('.colorItem'):null;document.querySelectorAll('.colorItem').forEach(n=>n.classList.remove('dropTarget'));if(target&&target.dataset.index!==undefined){colorDrag.targetIndex=Number(target.dataset.index);if(colorDrag.targetIndex!==colorDrag.index)target.classList.add('dropTarget');}else colorDrag.targetIndex=colorDrag.index;}
  function endColorDrag(e){if(!colorDrag||e.pointerId!==colorDrag.pointerId)return;let {index,targetIndex,active,item}=colorDrag;colorDrag=null;item.classList.remove('dragging');document.querySelectorAll('.colorItem').forEach(n=>n.classList.remove('dropTarget'));try{item.releasePointerCapture(e.pointerId);}catch(_){}if(active&&targetIndex!==index&&targetIndex>=0&&targetIndex<s.colors.length)swapColors(index,targetIndex);}
+ async function generateFullCycle(){
+  if(busy||working)return;
+  let count=s.colors.length;
+  if(count<2)return notify('Add at least 2 colors to generate a cycle.');
+  s.cycle=true;working=true;
+  try{
+   let f=candidate();
+   let startIdx;
+   if(isNew){
+    if(current.steps.length+count>200)throw Error('Exceeds maximum 200 steps');
+    startIdx=current.steps.length;
+    for(let k=0;k<count;k++){let step=clone(f);step.id=uid();await regenerate(step,db.layout,startIdx+k);current.steps.push(step);}
+   }else{
+    startIdx=current.steps.findIndex(x=>x.id===f.id);
+    if(startIdx<0)throw Error('Step missing');
+    if(startIdx+count>200)throw Error('Exceeds maximum 200 steps');
+    current.steps[startIdx]=f;
+    for(let k=1;k<count;k++){
+     let targetIdx=startIdx+k;
+     if(targetIdx>=current.steps.length)current.steps.push(clone(f));
+     else{
+      let dst=current.steps[targetIdx];
+      if(bgOpts){dst.bgMode=f.bgMode;dst.bgSource=clone(f.bgSource);dst.bgPanels=clone(f.bgPanels);}
+      else if(f.mode==='span'||f.mode==='repeat'){dst.mode=f.mode;dst.source=clone(f.source);dst.panels=[null,null,null,null];}
+      else{if(dst.mode!=='panels'){dst.mode='panels';dst.source=null;}dst.panels[Number(placement.value)]=clone(s);}
+     }
+    }
+    for(let k=0;k<count;k++)await regenerate(current.steps[startIdx+k],db.layout,startIdx+k);
+   }
+   selected=startIdx;revision++;working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
+   notify('Generated '+count+'-step color cycle.');
+  }catch(e){notify(e.message);}finally{working=false;}
+ }
  function rebuild(){controls.replaceChildren();let shaped=['heart','star','circle','square','diamond','triangle','arrow','dots'].includes(s.pattern),colors=el('div',undefined,'colorRow');
   s.colors.forEach((color,i)=>{
+   let isTrans=color==='transparent';
    let item=el('div',undefined,'colorItem');item.dataset.index=i;item.draggable=true;
    let header=el('div',undefined,'colorItemHeader'),handle=el('span','⠿','colorDragHandle'),label=el('span','#'+(i+1),'colorIndex'),nav=el('div',undefined,'colorNav');
    handle.title='Drag to reorder';
@@ -758,8 +871,10 @@ function advancedPattern(frame,target,isNew,source){
    let rightBtn=document.createElement('button');rightBtn.type='button';rightBtn.className='colorMoveBtn';rightBtn.textContent='▶';rightBtn.title='Move later';rightBtn.disabled=i===s.colors.length-1;
    rightBtn.onclick=e=>{e.stopPropagation();swapColors(i,i+1);};
    nav.append(leftBtn,rightBtn);header.append(handle,label,nav);
-   let input=document.createElement('input');input.type='color';input.value=color;
+   let input=document.createElement('input');input.type='color';input.value=isTrans?'#000000':color;if(isTrans)input.classList.add('isTransparent');
    input.oninput=()=>{s.colors[i]=input.value;s.a=s.colors[0];s.b=s.colors[1]||s.a;refresh();};
+   let transBtn=button('∅',e=>{e.stopPropagation();s.colors[i]=s.colors[i]==='transparent'?'#ffffff':'transparent';s.a=s.colors[0];s.b=s.colors[1]||s.a;rebuild();refresh();},'colorTransBtn'+(isTrans?' active':''));
+   transBtn.title=isTrans?'Transparent (tap to set color)':'Make transparent';
    handle.onpointerdown=e=>startColorDrag(e,i,item);
    item.onpointermove=moveColorDrag;item.onpointerup=endColorDrag;item.onpointercancel=endColorDrag;
    item.ondragstart=e=>{e.dataTransfer.setData('text/plain',String(i));e.dataTransfer.effectAllowed='move';item.classList.add('dragging');};
@@ -767,31 +882,118 @@ function advancedPattern(frame,target,isNew,source){
    item.ondragleave=()=>item.classList.remove('dropTarget');
    item.ondrop=e=>{e.preventDefault();item.classList.remove('dropTarget');let from=Number(e.dataTransfer.getData('text/plain'));if(Number.isFinite(from))swapColors(from,i);};
    item.ondragend=()=>{item.classList.remove('dragging');document.querySelectorAll('.colorItem').forEach(n=>n.classList.remove('dropTarget'));};
-   item.append(header,input);colors.append(item);
+   item.append(header,input,transBtn);colors.append(item);
   });
   controls.append(colors);
   buttons(controls,[['Add color',()=>{if(s.colors.length<8){s.colors.push('#ffffff');rebuild();refresh();}}],['Remove last',()=>{if(s.colors.length>1){s.colors.pop();rebuild();refresh();}}]]);
-  if(s.colors.length>1)controls.append(hint('Drag the ⠿ handle or card, or use ◀ / ▶ to reorder colors.'));
+  if(s.colors.length>1)controls.append(hint('Drag ⠿ or use ◀ / ▶ to reorder. Tap ∅ for transparent.'));
   if(s.pattern==='solid')controls.append(hint('Solid uses the first palette color.'));if(s.pattern==='border')controls.append(hint('Border uses the first color inside and second color on the edge.'));
-  if(shaped){let bg=document.createElement('input');bg.type='color';bg.value=s.background;bg.oninput=()=>{s.background=bg.value;refresh();};controls.append(field('Background',bg));let rot=select([[0,'Up / 0°'],[90,'Right / 90°'],[180,'Down / 180°'],[270,'Left / 270°']],s.rotation);rot.onchange=()=>{s.rotation=Number(rot.value);refresh();};controls.append(field('Direction / rotation',rot));check('Repeat shapes in a grid','tiled');check('Outline instead of filled','outline');number('Spacing (pixels)','spacing',0,32);}
+  if(shaped){
+   let bgTrans=s.background==='transparent';
+   let bgRow=el('div',undefined,'bgColorRow');
+   let bg=document.createElement('input');bg.type='color';bg.value=bgTrans?'#000000':s.background;if(bgTrans)bg.classList.add('isTransparent');bg.oninput=()=>{s.background=bg.value;refresh();};
+   let bgTBtn=button(bgTrans?'Transparent (∅)':'Make transparent (∅)',()=>{s.background=s.background==='transparent'?'#000000':'transparent';rebuild();refresh();},'colorTransBtn'+(bgTrans?' active':''));
+   bgRow.append(bg,bgTBtn);controls.append(field('Shape background',bgRow));
+   let rot=select([[0,'Up / 0°'],[90,'Right / 90°'],[180,'Down / 180°'],[270,'Left / 270°']],s.rotation);rot.onchange=()=>{s.rotation=Number(rot.value);refresh();};controls.append(field('Direction / rotation',rot));check('Repeat shapes in a grid','tiled');check('Outline instead of filled','outline');number('Spacing (pixels)','spacing',0,32);
+  }
   if(['gradient','stripes'].includes(s.pattern)){let d=select([['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Diagonal'],['antidiagonal','Opposite diagonal']],s.direction);d.onchange=()=>{s.direction=d.value;refresh();};controls.append(field('Direction',d));}
   if(!['solid','gradient'].includes(s.pattern))number(shaped?'Shape size (pixels)':'Pattern width (pixels)','size',1,64);
   if(s.outline||s.pattern==='border')number('Outline / border thickness','thickness',1,8);
+  check('Rotate colors across steps','cycle',true);
+  if(s.cycle&&s.colors.length>1)buttons(controls,[['Generate full cycle ('+s.colors.length+' steps)',generateFullCycle]]);
  }
  type.onchange=()=>{s.pattern=type.value;if(!s.size)s.size=4;rebuild();refresh();};placement.onchange=refresh;rebuild();
- buttons(b,[['Cancel',()=>{revision++;closeSheet(true);if(live)previewCurrent(true);}],['Done',async()=>{if(busy||working)return;working=true;try{let f=candidate();await regenerate(f);if(!isNew&&f.mode!=='panels'&&frame.mode==='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace other panel images with this wall source?'))return;if(isNew){if(current.steps.length>=200)throw Error('Maximum 200 steps');current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');current.steps[i]=f;selected=i;}revision++;working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
- if(!isNew){b.append(el('div',undefined,'separator'));buttons(b,[['Remove pattern',()=>{if(!confirm('Remove this pattern?'))return;let i=current.steps.findIndex(f=>f.id===frame.id);if(i<0)return;if(typeof target==='string')current.steps[i]={...blankFrame(),id:frame.id};else{current.steps[i].panels[target]=null;current.steps[i].tiles[target]='';}closeSheet(false);changed();renderEditor();previewCurrent(true);},'danger'],['Delete entire step',()=>deleteStep(frame.id),'danger']]);buttons(b,[['Move earlier',()=>{closeSheet();moveStep(frame.id,-1);}],['Move later',()=>{closeSheet();moveStep(frame.id,1);}]]);}
+ buttons(b,[['Cancel',()=>{revision++;closeSheet(true);if(live)previewCurrent(true);}],['Done',async()=>{if(busy||working)return;working=true;try{let f=candidate();if(!bgOpts&&!isNew&&f.mode!=='panels'&&frame.mode==='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace other panel images with this wall source?'))return;if(bgOpts){let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');await regenerate(f,db.layout,i);current.steps[i]=f;selected=i;if(bgOpts.applyAll){for(let k=0;k<current.steps.length;k++){current.steps[k].bgMode=f.bgMode;current.steps[k].bgSource=clone(f.bgSource);current.steps[k].bgPanels=clone(f.bgPanels);await regenerate(current.steps[k],db.layout,k);}}}else if(isNew){if(current.steps.length>=200)throw Error('Maximum 200 steps');await regenerate(f,db.layout,current.steps.length);current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');await regenerate(f,db.layout,i);current.steps[i]=f;selected=i;}revision++;working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
+ if(!isNew&&!bgOpts){b.append(el('div',undefined,'separator'));buttons(b,[['Remove pattern',()=>{if(!confirm('Remove this pattern?'))return;let i=current.steps.findIndex(f=>f.id===frame.id);if(i<0)return;if(typeof target==='string'){let prevBg={bgMode:current.steps[i].bgMode,bgSource:current.steps[i].bgSource,bgPanels:current.steps[i].bgPanels};current.steps[i]={...blankFrame(),id:frame.id,...prevBg};}else{current.steps[i].panels[target]=null;current.steps[i].tiles[target]='';}closeSheet(false);changed();renderEditor();previewCurrent(true);},'danger'],['Delete entire step',()=>deleteStep(frame.id),'danger']]);buttons(b,[['Move earlier',()=>{closeSheet();moveStep(frame.id,-1);}],['Move later',()=>{closeSheet();moveStep(frame.id,1);}]]);}
  refresh();
 }
 
-function deleteStep(id){if(busy||working||!confirm('Delete this entire step?'))return;current.steps=current.steps.filter(f=>f.id!==id);selected=Math.min(selected,Math.max(0,current.steps.length-1));closeSheet(false);changed();renderEditor();previewCurrent(true);}
-function moveStep(id,delta){let i=current.steps.findIndex(f=>f.id===id),dest=i+delta;if(i<0||dest<0||dest>=current.steps.length)return;let f=current.steps.splice(i,1)[0];current.steps.splice(dest,0,f);selected=dest;changed();renderEditor();previewCurrent();}
+function openBackgroundEditor(frame,applyAllDefault=false){
+ openSheet('Background layer');
+ let b=$('sheetBody'),f=clone(frame);
+ if(!f.bgMode)f.bgMode='none';
+ if(!Array.isArray(f.bgPanels))f.bgPanels=[null,null,null,null];
+ let session={bg:true,rev:0};editorSession=session;
+ let bgType=select([['none','None (Black)'],['image','Image'],['pattern','Custom pattern / shapes']],f.bgMode==='none'?'none':((f.bgMode==='panels'?f.bgPanels.find(Boolean):f.bgSource)?.type||'image'));
+ let placement=select([['span','Span across all four'],['repeat','Repeat on all four'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],f.bgMode==='none'?'span':f.bgMode==='panels'?Math.max(0,f.bgPanels.findIndex(Boolean)):f.bgMode);
+ let controls=el('div'),view=el('div',undefined,'wall miniPreview');
+ b.append(field('Background type',bgType),field('Background placement',placement),controls,view);
+ let activeBgSrc=(f.bgMode==='panels'?f.bgPanels.find(Boolean):f.bgSource)||null;
+ function syncFrame(){
+  let out=clone(f),t=bgType.value,dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);
+  if(t==='none'||!activeBgSrc){out.bgMode='none';out.bgSource=null;out.bgPanels=[null,null,null,null];}
+  else if(typeof dest==='string'){out.bgMode=dest;out.bgSource=clone(activeBgSrc);out.bgPanels=[null,null,null,null];}
+  else{out.bgMode='panels';out.bgSource=null;out.bgPanels=[0,1,2,3].map(i=>i===dest?clone(activeBgSrc):null);}
+  return out;
+ }
+ async function refresh(){
+  let rev=++session.rev;
+  try{
+   let cand=syncFrame(),idx=Math.max(0,current.steps.findIndex(x=>x.id===cand.id));
+   await regenerate(cand,db.layout,idx);
+   if(editorSession!==session||rev!==session.rev)return;
+   let w=makeWall(cand,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));
+   queueTiles(cand.tiles,[0,1,2,3],false,true);
+  }catch(e){notify(e.message);}
+ }
+ function rebuild(){
+  controls.replaceChildren();
+  placement.parentElement.hidden=bgType.value==='none';
+  if(bgType.value==='none')return;
+  if(bgType.value==='image'){
+   if(!activeBgSrc||activeBgSrc.type!=='image'){
+    buttons(controls,[['Choose background image',()=>pickImage(next=>{if(next.type==='gif')return notify('Use a still image or pattern for background.');activeBgSrc=next;rebuild();refresh();}),'primary']]);
+   }else{
+    let img=el('img',undefined,'sourcePreview');img.src=activeBgSrc.src;img.alt='Background';controls.append(img);
+    buttons(controls,[['Change image',()=>pickImage(next=>{if(next.type==='gif')return notify('Use a still image or pattern for background.');activeBgSrc=next;rebuild();refresh();})]]);
+    let fit=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],activeBgSrc.fit);fit.onchange=()=>{activeBgSrc.fit=fit.value;refresh();};
+    let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=activeBgSrc.smooth;smooth.onchange=()=>{activeBgSrc.smooth=smooth.checked;refresh();};
+    let chk=el('label',undefined,'check');chk.append(smooth,document.createTextNode('Smooth resizing'));
+    controls.append(field('Image fitting',fit),chk);
+   }
+  }else{
+   if(!activeBgSrc||activeBgSrc.type!=='pattern')activeBgSrc=patternSpec();
+   buttons(controls,[['Edit pattern & colors',()=>{
+    let cand=syncFrame();
+    advancedPattern(cand,placement.value==='span'||placement.value==='repeat'?placement.value:Number(placement.value),false,activeBgSrc,{applyAll:applyAllDefault});
+   },'primary']]);
+  }
+ }
+ bgType.onchange=()=>{if(bgType.value==='pattern'&&(!activeBgSrc||activeBgSrc.type!=='pattern'))activeBgSrc=patternSpec();rebuild();refresh();};
+ placement.onchange=refresh;
+ rebuild();
+ async function commitBg(allSteps){
+  if(working||busy)return;
+  working=true;
+  try{
+   let cand=syncFrame();
+   if(allSteps){
+    for(let k=0;k<current.steps.length;k++){
+     current.steps[k].bgMode=cand.bgMode;current.steps[k].bgSource=clone(cand.bgSource);current.steps[k].bgPanels=clone(cand.bgPanels);
+     await regenerate(current.steps[k],db.layout,k);
+    }
+   }else{
+    let i=current.steps.findIndex(x=>x.id===cand.id);
+    if(i<0)throw Error('Step missing');
+    await regenerate(cand,db.layout,i);
+    current.steps[i]=cand;selected=i;
+   }
+   working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
+  }catch(e){notify(e.message);}finally{working=false;}
+ }
+ buttons(b,[['Cancel',()=>closeSheet(true)],['Apply to this step',()=>commitBg(false),applyAllDefault?'':'primary'],['Apply to all steps',()=>commitBg(true),applyAllDefault?'primary':'']]);
+ refresh();
+}
+
+async function deleteStep(id){if(busy||working||!confirm('Delete this entire step?'))return;current.steps=current.steps.filter(f=>f.id!==id);selected=Math.min(selected,Math.max(0,current.steps.length-1));await refreshCyclingSteps();closeSheet(false);changed();renderEditor();previewCurrent(true);}
+async function moveStep(id,delta){let i=current.steps.findIndex(f=>f.id===id),dest=i+delta;if(i<0||dest<0||dest>=current.steps.length)return;let f=current.steps.splice(i,1)[0];current.steps.splice(dest,0,f);selected=dest;await refreshCyclingSteps();changed();renderEditor();previewCurrent();}
 function stepOptions(id){
  if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;openSheet('Step '+(current.steps.indexOf(f)+1));let b=$('sheetBody');
  if(f.mode!=='panels')buttons(b,[['Edit source',()=>openSource(id,0),'primary']]);
  else{let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>openSource(id,i)));b.append(positions);}
+ buttons(b,[['Background layer',()=>openBackgroundEditor(clone(f))]]);
  buttons(b,[['Move earlier',()=>{closeSheet(false);moveStep(id,-1);}],['Move later',()=>{closeSheet(false);moveStep(id,1);}]]);
- buttons(b,[['Duplicate',()=>{if(current.steps.length>=200)return;let copy=clone(f);copy.id=uid();let i=current.steps.findIndex(x=>x.id===id);current.steps.splice(i+1,0,copy);selected=i+1;closeSheet(false);changed();renderEditor();previewCurrent(true);}],['Delete step',()=>deleteStep(id),'danger']]);
+ buttons(b,[['Duplicate',async()=>{if(current.steps.length>=200)return;let copy=clone(f);copy.id=uid();let i=current.steps.findIndex(x=>x.id===id);current.steps.splice(i+1,0,copy);selected=i+1;await refreshCyclingSteps();closeSheet(false);changed();renderEditor();previewCurrent(true);}],['Delete step',()=>deleteStep(id),'danger']]);
 }
 
 function saveSequence(){
@@ -1068,10 +1270,10 @@ function dragMove(e){
  drag.target=card?card.dataset.id:add?'end':null;if(card&&card.dataset.id!==drag.id)card.classList.add('dropTarget');if(add)add.classList.add('dropTarget');
  let r=grid.getBoundingClientRect();if(e.clientY>r.bottom-40)grid.scrollTop+=10;else if(e.clientY<r.top+40)grid.scrollTop-=10;
 }
-function dragEnd(e){
+async function dragEnd(e){
  if(!drag||e.pointerId!==drag.pointer)return;
  let d=drag;drag=null;clearTimeout(d.hold);
- if(d.active){e.preventDefault();d.card.style.opacity='';d.ghost.remove();document.querySelectorAll('.dropTarget').forEach(n=>n.classList.remove('dropTarget'));if(e.type!=='pointercancel'&&d.target&&d.target!==d.id){let from=current.steps.findIndex(f=>f.id===d.id),to=d.target==='end'?current.steps.length-1:current.steps.findIndex(f=>f.id===d.target);if(from>=0&&to>=0&&from!==to){let f=current.steps.splice(from,1)[0];current.steps.splice(to,0,f);selected=to;changed();renderEditor();previewCurrent();}}}
+ if(d.active){e.preventDefault();d.card.style.opacity='';d.ghost.remove();document.querySelectorAll('.dropTarget').forEach(n=>n.classList.remove('dropTarget'));if(e.type!=='pointercancel'&&d.target&&d.target!==d.id){let from=current.steps.findIndex(f=>f.id===d.id),to=d.target==='end'?current.steps.length-1:current.steps.findIndex(f=>f.id===d.target);if(from>=0&&to>=0&&from!==to){let f=current.steps.splice(from,1)[0];current.steps.splice(to,0,f);selected=to;await refreshCyclingSteps();changed();renderEditor();previewCurrent();}}}
  if(d.active||d.scrolling){clearTimeout(suppressTimer);suppressTimer=setTimeout(()=>suppressClick=false,400);}
 }
 
