@@ -56,7 +56,15 @@ public class MainActivity extends Activity {
   });host.requestApplyInsets();
   WebSettings settings=web.getSettings();settings.setJavaScriptEnabled(true);settings.setAllowFileAccess(true);settings.setAllowContentAccess(true);settings.setAllowFileAccessFromFileURLs(false);settings.setAllowUniversalAccessFromFileURLs(false);
   web.addJavascriptInterface(new Bridge(),"Native");web.setWebViewClient(new WebViewClient(){@Override public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest request){return true;}});
-  web.setWebChromeClient(new WebChromeClient(){@Override public boolean onShowFileChooser(WebView view,ValueCallback<Uri[]> callback,FileChooserParams params){if(picker!=null)picker.onReceiveValue(null);picker=callback;Intent intent=new Intent(Intent.ACTION_GET_CONTENT);intent.setType("image/*");intent.addCategory(Intent.CATEGORY_OPENABLE);try{startActivityForResult(intent,81);}catch(Exception e){picker.onReceiveValue(null);picker=null;log(e.toString());}return true;}});
+  web.setWebChromeClient(new WebChromeClient(){
+   @Override public boolean onShowFileChooser(WebView view,ValueCallback<Uri[]> callback,FileChooserParams params){if(picker!=null)picker.onReceiveValue(null);picker=callback;Intent intent=new Intent(Intent.ACTION_GET_CONTENT);intent.setType("image/*");intent.addCategory(Intent.CATEGORY_OPENABLE);try{startActivityForResult(intent,81);}catch(Exception e){picker.onReceiveValue(null);picker=null;log(e.toString());}return true;}
+   @Override public boolean onJsAlert(WebView view,String url,String message,JsResult result){
+    new android.app.AlertDialog.Builder(MainActivity.this).setTitle("LED Matrix Controller").setMessage(message).setPositiveButton("OK",(d,w)->result.confirm()).setOnCancelListener(d->result.confirm()).show();return true;
+   }
+   @Override public boolean onJsConfirm(WebView view,String url,String message,JsResult result){
+    new android.app.AlertDialog.Builder(MainActivity.this).setTitle("LED Matrix Controller").setMessage(message).setPositiveButton("OK",(d,w)->result.confirm()).setNegativeButton("Cancel",(d,w)->result.cancel()).setOnCancelListener(d->result.cancel()).show();return true;
+   }
+  });
   web.loadUrl("file:///android_asset/index.html");
  }
  private void js(String code){ui.post(()->{if(!destroyed)web.evaluateJavascript(code,null);});}

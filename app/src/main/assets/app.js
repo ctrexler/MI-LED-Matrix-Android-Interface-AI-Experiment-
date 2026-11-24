@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION='0.5.3';
+const APP_VERSION='0.5.4';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
@@ -58,8 +58,9 @@ function normalizeSequence(s){
    let fit=['contain','cover','stretch','actual'].includes(g.fit)?g.fit:'contain';
    let alignX=Number.isFinite(g.alignX)?Math.max(0,Math.min(1,g.alignX)):0.5;
    let alignY=Number.isFinite(g.alignY)?Math.max(0,Math.min(1,g.alignY)):0.5;
+   let layer=g.layer==='bg'?'bg':'fg';
    let frames=g.frames.filter(fr=>fr&&typeof fr==='object'&&imageData(fr.src)).map(fr=>({id:typeof fr.id==='string'?fr.id:uid(),src:fr.src,deleted:!!fr.deleted}));
-   if(frames.length)gifGroups[gid]={id:gid,target,fit,smooth:!!g.smooth,alignX,alignY,frames};
+   if(frames.length)gifGroups[gid]={id:gid,target,layer,fit,smooth:!!g.smooth,alignX,alignY,frames};
   }
  }
  return {id:typeof s.id==='string'?s.id:uid(),name:s.name.slice(0,100),cols,gifGroups,steps:s.steps.map(f=>{
@@ -320,7 +321,7 @@ async function renderSource(s,w,h,stepOffset=0,transparent=false){
  x.imageSmoothingEnabled=s.smooth;x.imageSmoothingQuality='high';
  if(s.fit==='stretch')x.drawImage(i,0,0,w,h);
  else{
-  let scale=s.fit==='actual'?Math.min(1,w/i.width,h/i.height):(s.fit==='cover'?Math.max:Math.min)(w/i.width,h/i.height);
+  let scale=s.fit==='actual'?1:(s.fit==='cover'?Math.max:Math.min)(w/i.width,h/i.height);
   let iw=Math.max(1,Math.round(i.width*scale)),ih=Math.max(1,Math.round(i.height*scale));
   let ax=Number.isFinite(s.alignX)?s.alignX:0.5,ay=Number.isFinite(s.alignY)?s.alignY:0.5;
   x.drawImage(i,Math.round((w-iw)*ax),Math.round((h-ih)*ay),iw,ih);
@@ -549,7 +550,7 @@ function imageAlignControls(parent,obj,onChange){
   lbl.append(top,r);parent.append(lbl);
  }
 }
-const FIT_OPTS=[['contain','Fit with black borders'],['actual','Original size (no upscale)'],['cover','Fill and crop'],['stretch','Stretch']];
+const FIT_OPTS=[['contain','Fit with black borders'],['actual','Original size (1:1)'],['cover','Fill and crop'],['stretch','Stretch']];
 
 function pickImage(callback){if(busy||working)return;pickerCallback=callback;$('imagePicker').value='';$('imagePicker').click();}
 async function onPicked(e){
@@ -579,13 +580,13 @@ async function onPicked(e){
 }
 
 function chooseType(callback){openSheet('Add image or pattern');let b=$('sheetBody');b.append(hint('Choose a gallery image or create a color pattern.'));buttons(b,[['Choose image',()=>pickImage(callback),'primary'],['Create pattern',()=>callback(patternSpec())]]);}
-function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');let layerSel=null;if(s.type!=='gif'){layerSel=select([['fg','Foreground (main layer)'],['bg','Background layer']],'fg');b.append(field('Layer',layerSel));}b.append(hint('Add one image across the wall, repeat it on every display, or place it on one display.'));const choose=target=>{if(s.type==='gif'){openGifEditor({groupId:null,target,insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:s.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:s.truncated});return;}let f=blankFrame(),isBg=layerSel&&layerSel.value==='bg';if(isBg){if(typeof target==='string'){f.bgMode=target;f.bgSource=clone(s);}else{f.bgMode='panels';f.bgPanels[target]=clone(s);}if(s.type==='pattern')advancedPattern(f,target,true,s,{applyAll:false,isNewStep:true});else openBackgroundEditor(f,false,true);return;}if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary'],['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
-function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;let src=f.mode!=='panels'?f.source:f.panels[index];if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){let g=current.gifGroups[src.gifGroupId];openGifEditor({groupId:g.id,target:g.target,insertIndex:current.steps.indexOf(f),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,alignX:g.alignX??0.5,alignY:g.alignY??0.5,truncated:false});return;}if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{if(s.type==='gif'){openGifEditor({groupId:null,target:index,insertIndex:current.steps.indexOf(f),isNew:false,frames:s.frames,fit:s.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:s.truncated});return;}let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
+function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');let layerSel=select([['fg','Foreground (main layer)'],['bg','Background layer']],'fg');b.append(field('Layer',layerSel));b.append(hint('Add one image across the wall, repeat it on every display, or place it on one display.'));const choose=target=>{let isBg=layerSel.value==='bg';if(s.type==='gif'){openGifEditor({groupId:null,target,layer:isBg?'bg':'fg',insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:s.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:s.truncated});return;}let f=blankFrame();if(isBg){if(typeof target==='string'){f.bgMode=target;f.bgSource=clone(s);}else{f.bgMode='panels';f.bgPanels[target]=clone(s);}if(s.type==='pattern')advancedPattern(f,target,true,s,{applyAll:false,isNewStep:true});else openBackgroundEditor(f,false,true);return;}if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary'],['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
+function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;let src=f.mode!=='panels'?f.source:f.panels[index];if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){let g=current.gifGroups[src.gifGroupId];openGifEditor({groupId:g.id,target:g.target,layer:g.layer||'fg',insertIndex:current.steps.indexOf(f),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,alignX:g.alignX??0.5,alignY:g.alignY??0.5,truncated:false});return;}if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{if(s.type==='gif'){openGifEditor({groupId:null,target:index,layer:'fg',insertIndex:current.steps.indexOf(f),isNew:false,frames:s.frames,fit:s.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:s.truncated});return;}let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
 
 function openGifEditor(opts){
- let groupId=opts.groupId,target=opts.target,insertIndex=opts.insertIndex,frames=clone(opts.frames),fit=opts.fit||db.defaults.fit,smooth=!!opts.smooth;
+ let groupId=opts.groupId,target=opts.target,layer=opts.layer==='bg'?'bg':'fg',insertIndex=opts.insertIndex,frames=clone(opts.frames),fit=opts.fit||db.defaults.fit,smooth=!!opts.smooth;
  let alignState={alignX:Number.isFinite(opts.alignX)?opts.alignX:0.5,alignY:Number.isFinite(opts.alignY)?opts.alignY:0.5};
- openSheet(groupId?'Edit GIF animation':'Preview GIF frames');
+ openSheet(groupId?'Edit GIF animation':(layer==='bg'?'Preview background GIF':'Preview GIF frames'));
  let session={gif:true,playing:true,animIdx:0,timer:null,rev:0};editorSession=session;
  const b=$('sheetBody');
  if(opts.truncated)b.append(hint('GIF has more than 25 frames; showing the first 25 frames.'));
@@ -624,8 +625,13 @@ function openGifEditor(opts){
  let renderedFrames=[];
  async function buildPreviewStep(src){
   let f=blankFrame(),spec={type:'image',src,fit,smooth,alignX:alignState.alignX,alignY:alignState.alignY};
-  if(target==='span'||target==='repeat'){f.mode=target;f.source=spec;}
-  else{f.mode='panels';f.panels[target]=spec;}
+  if(layer==='bg'){
+   if(target==='span'||target==='repeat'){f.bgMode=target;f.bgSource=spec;}
+   else{f.bgMode='panels';f.bgPanels[target]=spec;}
+  }else{
+   if(target==='span'||target==='repeat'){f.mode=target;f.source=spec;}
+   else{f.mode='panels';f.panels[target]=spec;}
+  }
   await regenerate(f);
   return f;
  }
@@ -702,22 +708,22 @@ function openGifEditor(opts){
   if(!groupId&&!act.length)return notify('Keep at least one frame to apply.');
   clearTimeout(session.timer);working=true;
   try{
-   await applyGifGroup({groupId,target,insertIndex,frames,fit,smooth,alignX:alignState.alignX,alignY:alignState.alignY});
+   await applyGifGroup({groupId,target,layer,insertIndex,frames,fit,smooth,alignX:alignState.alignX,alignY:alignState.alignY});
    if(fit!=='actual')db.defaults={fit,smooth};
    working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
   }catch(e){notify(e.message);}finally{working=false;}
  },'primary']]);
  if(groupId){
   b.append(el('div',undefined,'separator'));
-  buttons(b,[['Background layer',()=>{
+  buttons(b,[...(layer==='fg'?[['Background layer',()=>{
    let firstStep=current.steps.find(f=>target==='span'||target==='repeat'?(f.mode===target&&f.source&&f.source.gifGroupId===groupId):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===groupId));
    if(firstStep)openBackgroundEditor(clone(firstStep),true);
-  }],['Remove GIF from sequence',async()=>{
+  }]]:[]),['Remove GIF from sequence',async()=>{
    if(working||busy||!confirm('Remove all frames of this GIF from the sequence?'))return;
    clearTimeout(session.timer);working=true;
    try{
     frames.forEach(fr=>fr.deleted=true);
-    await applyGifGroup({groupId,target,insertIndex,frames,fit,smooth});
+    await applyGifGroup({groupId,target,layer,insertIndex,frames,fit,smooth,alignX:alignState.alignX,alignY:alignState.alignY});
     working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
    }catch(e){notify(e.message);}finally{working=false;}
   },'danger']]);
@@ -725,14 +731,19 @@ function openGifEditor(opts){
  renderAll().then(()=>{if(editorSession===session&&session.playing)scheduleTick();});
 }
 
-async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth,alignX=0.5,alignY=0.5}){
+async function applyGifGroup({groupId,target,layer='fg',insertIndex,frames,fit,smooth,alignX=0.5,alignY=0.5}){
  if(!current.gifGroups)current.gifGroups={};
  let gid=groupId||uid();
  let active=frames.filter(fr=>!fr.deleted);
  let existing=[];
  if(groupId){
   current.steps.forEach((f,idx)=>{
-   let match=(target==='span'||target==='repeat')?(f.mode===target&&f.source&&f.source.gifGroupId===gid):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===gid);
+   let match;
+   if(layer==='bg'){
+    match=(target==='span'||target==='repeat')?(f.bgMode===target&&f.bgSource&&f.bgSource.gifGroupId===gid):(f.bgMode==='panels'&&f.bgPanels&&f.bgPanels[target]&&f.bgPanels[target].gifGroupId===gid);
+   }else{
+    match=(target==='span'||target==='repeat')?(f.mode===target&&f.source&&f.source.gifGroupId===gid):(f.mode==='panels'&&f.panels[target]&&f.panels[target].gifGroupId===gid);
+   }
    if(match)existing.push(idx);
   });
  }
@@ -752,15 +763,24 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth,align
  for(let k=0;k<active.length;k++){
   let step=current.steps[slots[k]];
   let srcObj={type:'image',src:active[k].src,fit,smooth,alignX,alignY,gifGroupId:gid,gifFrameId:active[k].id};
-  if(target==='span'||target==='repeat'){
-   step.mode=target;step.source=srcObj;step.panels=[null,null,null,null];
-  }else{
-   if(step.mode!=='panels'){
-    let oldTiles=step.tiles.slice();
-    step.mode='panels';step.source=null;
-    step.panels=[0,1,2,3].map(p=>p===target?null:(oldTiles[p]?{type:'image',src:oldTiles[p],fit:'contain',smooth:false}:null));
+  if(layer==='bg'){
+   if(target==='span'||target==='repeat'){
+    step.bgMode=target;step.bgSource=srcObj;step.bgPanels=[null,null,null,null];
+   }else{
+    if(step.bgMode!=='panels'){step.bgMode='panels';step.bgSource=null;step.bgPanels=[null,null,null,null];}
+    step.bgPanels[target]=srcObj;
    }
-   step.panels[target]=srcObj;
+  }else{
+   if(target==='span'||target==='repeat'){
+    step.mode=target;step.source=srcObj;step.panels=[null,null,null,null];
+   }else{
+    if(step.mode!=='panels'){
+     let oldTiles=step.tiles.slice();
+     step.mode='panels';step.source=null;
+     step.panels=[0,1,2,3].map(p=>p===target?null:(oldTiles[p]?{type:'image',src:oldTiles[p],fit:'contain',smooth:false}:null));
+    }
+    step.panels[target]=srcObj;
+   }
   }
   await regenerate(step,db.layout,slots[k]);
  }
@@ -769,18 +789,26 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth,align
   let toClean=existing.slice(active.length).sort((a,b)=>b-a);
   for(let idx of toClean){
    let step=current.steps[idx];
-   if(target==='span'||target==='repeat'){
-    current.steps.splice(idx,1);
+   if(layer==='bg'){
+    if(target==='span'||target==='repeat'){step.bgMode='none';step.bgSource=null;step.bgPanels=[null,null,null,null];}
+    else{step.bgPanels[target]=null;if(step.bgPanels.every(p=>p===null))step.bgMode='none';}
+    if(step.bgMode==='none'&&step.mode==='panels'&&step.panels.every(p=>p===null))current.steps.splice(idx,1);
+    else await regenerate(step,db.layout,idx);
    }else{
-    step.panels[target]=null;step.tiles[target]='';
-    if(step.panels.every(p=>p===null))current.steps.splice(idx,1);
+    if(target==='span'||target==='repeat'){
+     current.steps.splice(idx,1);
+    }else{
+     step.panels[target]=null;step.tiles[target]='';
+     if(step.panels.every(p=>p===null)&&(!step.bgMode||step.bgMode==='none'))current.steps.splice(idx,1);
+     else await regenerate(step,db.layout,idx);
+    }
    }
   }
  }
  await refreshCyclingSteps();
 
  if(active.length){
-  current.gifGroups[gid]={id:gid,target,fit,smooth,alignX,alignY,frames:clone(frames)};
+  current.gifGroups[gid]={id:gid,target,layer,fit,smooth,alignX,alignY,frames:clone(frames)};
   selected=Math.min(startIdx,Math.max(0,current.steps.length-1));
  }else{
   delete current.gifGroups[gid];
@@ -997,11 +1025,20 @@ function openBackgroundEditor(frame,applyAllDefault=false,isNewStep=false){
   placement.parentElement.hidden=bgType.value==='none';
   if(bgType.value==='none')return;
   if(bgType.value==='image'){
+   let pickBgGif=next=>{
+    let dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);
+    let idx=isNewStep?current.steps.length:Math.max(0,current.steps.findIndex(x=>x.id===f.id));
+    openGifEditor({groupId:null,target:dest,layer:'bg',insertIndex:idx,isNew:isNewStep,frames:next.frames,fit:next.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:next.truncated});
+   };
+   if(activeBgSrc&&activeBgSrc.gifGroupId&&current.gifGroups&&current.gifGroups[activeBgSrc.gifGroupId]){
+    let g=current.gifGroups[activeBgSrc.gifGroupId];
+    buttons(controls,[['Edit background GIF',()=>openGifEditor({groupId:g.id,target:g.target,layer:'bg',insertIndex:Math.max(0,current.steps.findIndex(x=>x.id===f.id)),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,alignX:g.alignX??0.5,alignY:g.alignY??0.5,truncated:false}),'primary']]);
+   }
    if(!activeBgSrc||activeBgSrc.type!=='image'){
-    buttons(controls,[['Choose background image',()=>pickImage(next=>{if(next.type==='gif')return notify('Use a still image or pattern for background.');activeBgSrc=next;rebuild();refresh();}),'primary']]);
+    buttons(controls,[['Choose background image',()=>pickImage(next=>{if(next.type==='gif'){pickBgGif(next);return;}activeBgSrc=next;rebuild();refresh();}),'primary']]);
    }else{
     let img=el('img',undefined,'sourcePreview');img.src=activeBgSrc.src;img.alt='Background';controls.append(img);
-    buttons(controls,[['Change image',()=>pickImage(next=>{if(next.type==='gif')return notify('Use a still image or pattern for background.');activeBgSrc=next;rebuild();refresh();})]]);
+    buttons(controls,[['Change image',()=>pickImage(next=>{if(next.type==='gif'){pickBgGif(next);return;}activeBgSrc=next;rebuild();refresh();})]]);
     let fit=select(FIT_OPTS,activeBgSrc.fit);fit.onchange=()=>{activeBgSrc.fit=fit.value;refresh();};
     let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=activeBgSrc.smooth;smooth.onchange=()=>{activeBgSrc.smooth=smooth.checked;refresh();};
     let chk=el('label',undefined,'check');chk.append(smooth,document.createTextNode('Smooth resizing'));

@@ -1,7 +1,12 @@
 # LED Matrix Controller Version History
 
+## 0.5.4 — 2026-11-23
+- Replaced default WebView `"The page at 'file://' says:"` alert/confirm headers with native **LED Matrix Controller** dialogs.
+- Enabled **Background layer** support for animated GIFs (via the new-step Layer selector and Background layer editor).
+
 ## 0.5.3 — 2026-11-21
 - Background layer support per step (None, Image, or Custom Pattern/Shapes) with **Apply to all steps**, composited underneath transparent PNGs, animated GIFs, and patterns.
+- Layer selector (**Foreground** vs. **Background**) when adding a new step.
 - Transparent (`∅`) color option for pattern palette colors and shape backgrounds.
 - **Rotate colors across steps** toggle and **Generate full cycle** button on foreground and background patterns.
 - Direction support for `zigzag` stripes and horizontal sliders for pattern size/thickness/spacing and direction/rotation.
