@@ -7,7 +7,7 @@ android {
   minSdk 26
   targetSdk 35
   versionCode project.hasProperty('appVersionCode') ? project.property('appVersionCode').toInteger() : 5
-  versionName project.hasProperty('appVersionName') ? project.property('appVersionName').toString() : '0.5.8'
+  versionName project.hasProperty('appVersionName') ? project.property('appVersionName').toString() : '0.5.5'
  }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
  def keyFile = System.getenv('ANDROID_KEYSTORE_FILE')

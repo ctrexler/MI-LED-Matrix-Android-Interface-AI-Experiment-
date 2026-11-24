@@ -1,15 +1,5 @@
 # LED Matrix Controller Version History
 
-## 0.5.8 — 2026-11-24
-- Added `CONNECTION_PRIORITY_HIGH` refresh before `block 7` and per-display Live Preview millisecond timing logs (`hdr/b6/b7`) to diagnose BLE sync behavior.
-
-## 0.5.7 — 2026-11-24
-- Tuned Live Preview block pacing (`15 ms`) and pre-`block 7` HCI drain (`100 ms`) for `WRITE_NO_RESPONSE` (`properties = 4`) displays, plus `fastWrite` at the `block 7` start gate.
-
-## 0.5.6 — 2026-11-24
-- Added a pre-final-block sync barrier (`block 6` ACK/drain + gated simultaneous `block 7` dispatch) in Live Preview so all 4 displays trigger their frame refresh together.
-- Added high-priority connection refresh and gated parallel `PLAY` dispatch for Start Stored Slideshows.
-
 ## 0.5.5 — 2026-11-24
 - Parallelized Live Preview packet writes across all 4 per-display BLE lanes (`lanes[0..3]`) while keeping block-by-block lockstep synchronization.
 - Added parallel stored slideshow uploads with a temporary **Fast parallel upload (test mode)** toggle in Send to displays.
