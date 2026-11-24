@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION='0.5.5';
+const APP_VERSION='0.5.6';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;

@@ -116,10 +116,13 @@ public class MainActivity extends Activity {
   },BluetoothDevice.TRANSPORT_LE);}catch(Exception e){status(index,"Connection failed");log(e.toString());}
  }
  private void checkCancel() throws Exception {if(cancelled||destroyed||Thread.currentThread().isInterrupted())throw new Exception("Cancelled; storage changes cannot be undone.");}
- // Serial GATT write with completion verification.
- private void write(int index,byte[] data,long delay) throws Exception {
+ // Serial GATT write with completion verification (ack=true prefers WRITE_TYPE_DEFAULT to wait for air-ACK when supported).
+ private void write(int index,byte[] data,long delay) throws Exception {write(index,data,delay,false);}
+ private void write(int index,byte[] data,long delay,boolean ack) throws Exception {
   checkCancel();Link link=links.get(index);if(link==null||!link.ready)throw new Exception("D"+(index+1)+" not ready");if(data.length>link.mtu-3)throw new Exception("MTU too small");
-  BluetoothGattCharacteristic characteristic=link.characteristic;int type=(characteristic.getProperties()&BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)!=0?BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE:BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
+  BluetoothGattCharacteristic characteristic=link.characteristic;
+  int props=characteristic.getProperties();
+  int type=(ack&&(props&BluetoothGattCharacteristic.PROPERTY_WRITE)!=0)?BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT:((props&BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)!=0?BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE:BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
   CountDownLatch wait=new CountDownLatch(1);link.pending=wait;link.writeStatus=-1;
   try{boolean started;if(Build.VERSION.SDK_INT>=33)started=link.gatt.writeCharacteristic(characteristic,data,type)==BluetoothStatusCodes.SUCCESS;else{characteristic.setWriteType(type);characteristic.setValue(data);started=link.gatt.writeCharacteristic(characteristic);}if(!started)throw new Exception("Write rejected");if(!wait.await(12,TimeUnit.SECONDS))throw new Exception("Write timeout");checkCancel();if(link.writeStatus!=BluetoothGatt.GATT_SUCCESS)throw new Exception("Write status "+link.writeStatus);if(delay>0)Thread.sleep(delay);}
   catch(Exception error){
@@ -127,6 +130,24 @@ public class MainActivity extends Activity {
    if(!cancelled&&!destroyed&&links.compareAndSet(index,link,null)){link.ready=false;try{link.gatt.disconnect();link.gatt.close();}catch(Exception ignored){}status(index,"Write failed; reconnect");}
    throw error;
   }finally{link.pending=null;}
+ }
+ private void dispatchPlay(List<Integer> targets){
+  for(int index:targets){
+   Link link=links.get(index);
+   if(link!=null&&link.gatt!=null)try{link.gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);}catch(Exception ignored){}
+  }
+  try{Thread.sleep(25);}catch(InterruptedException ignored){}
+  final CountDownLatch gate=new CountDownLatch(1);
+  List<Future<Void>> tasks=new ArrayList<>();
+  for(int index:targets){
+   final int idx=index;
+   tasks.add(submitLane(idx,()->{
+    try{gate.await();}catch(InterruptedException ignored){return;}
+    fastWrite(idx,PLAY);
+   }));
+  }
+  gate.countDown();
+  for(Future<Void> t:tasks)try{await(t);}catch(Exception ignored){}
  }
  // Direct non-blocking write for single-packet synchronized commands (e.g. PLAY).
  private void fastWrite(int index,byte[] data){
@@ -161,20 +182,41 @@ public class MainActivity extends Activity {
      }));
     }
     for(Future<Void> f:hdrs)try{await(f);}catch(Exception ignored){}
-    // Step 2: Send blocks 0 to 7 in parallel per block across displays so all finish in lockstep
-    for(int block=0;block<8;block++){
+    // Step 2: Send blocks 0 to 6 in parallel per block across displays
+    boolean anyAckSupported=false;
+    for(int block=0;block<7;block++){
      if(!liveAllowed||busy.get()||destroyed)break;
-     final int b=block;
+     final int b=block;final boolean useAck=(block==6);
      List<Future<Void>> step=new ArrayList<>();
      for(int i=0;i<4;i++){
       final int idx=i;final byte[] tile=frames[i];
-      if(tile!=null&&isReady(idx))step.add(submitLane(idx,()->{
-       if(!liveAllowed||busy.get()||destroyed)return;
-       try{write(idx,livePacket(b,tile),0);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
-      }));
+      if(tile!=null&&isReady(idx)){
+       Link lk=links.get(idx);
+       if(lk!=null&&lk.characteristic!=null&&(lk.characteristic.getProperties()&BluetoothGattCharacteristic.PROPERTY_WRITE)!=0)anyAckSupported=true;
+       step.add(submitLane(idx,()->{
+        if(!liveAllowed||busy.get()||destroyed)return;
+        try{write(idx,livePacket(b,tile),0,useAck);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+       }));
+      }
      }
      for(Future<Void> f:step)try{await(f);}catch(Exception ignored){}
     }
+    if(!liveAllowed||busy.get()||destroyed)break;
+    // If displays only support WRITE_NO_RESPONSE, allow HCI TX buffers to drain before firing block 7
+    if(!anyAckSupported)try{Thread.sleep(40);}catch(InterruptedException ignored){}
+    // Step 3: Fire final trigger block 7 simultaneously across all ready displays using a start gate
+    final CountDownLatch gate=new CountDownLatch(1);
+    List<Future<Void>> fin=new ArrayList<>();
+    for(int i=0;i<4;i++){
+     final int idx=i;final byte[] tile=frames[i];
+     if(tile!=null&&isReady(idx))fin.add(submitLane(idx,()->{
+      try{gate.await();}catch(InterruptedException ignored){return;}
+      if(!liveAllowed||busy.get()||destroyed)return;
+      try{write(idx,livePacket(7,tile),0);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+     }));
+    }
+    gate.countDown();
+    for(Future<Void> f:fin)try{await(f);}catch(Exception ignored){}
    }}finally{previewRunning.set(false);if(!destroyed&&!busy.get()&&liveAllowed&&hasAnyPreview())schedulePreview();}
   });}catch(RejectedExecutionException ignored){previewRunning.set(false);}
  }
@@ -256,14 +298,15 @@ public class MainActivity extends Activity {
    try{JSONArray requested=new JSONArray(text);if(requested.length()<1||requested.length()>4)throw new Exception("Choose 1–4 displays");List<Integer> targets=new ArrayList<>();
     for(int i=0;i<requested.length();i++){int index=requested.getInt(i);if(index<0||index>3||targets.contains(index))throw new Exception("Invalid or duplicate destination");Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect D"+(index+1)+" first");targets.add(index);}
     waitForIdleLanes();
-    for(int index:targets)fastWrite(index,PLAY);
+    dispatchPlay(targets);
     js("notify('Selected slideshow start commands dispatched.')");
    }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
   });}
   @JavascriptInterface public void playAll(){liveAllowed=false;clearPreviews();operate(()->{
-   try{for(int index=0;index<4;index++){Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect all four displays first");}
+   try{List<Integer> targets=new ArrayList<>();
+    for(int index=0;index<4;index++){Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect all four displays first");targets.add(index);}
     waitForIdleLanes();
-    for(int index=0;index<4;index++)fastWrite(index,PLAY);
+    dispatchPlay(targets);
     js("notify('Stored slideshow start commands dispatched.')");
    }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
   });}
