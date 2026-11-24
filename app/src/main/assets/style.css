@@ -106,3 +106,5 @@
 .preview.collapsed .previewHead{order:3}
 .preview.collapsed .toggle{min-height:30px;font-size:12px}
 .preview.collapsed .previewHead b{font-size:12px}
+.stepCard.overLimit,.laneCard.overLimit,.filmFrame.overLimit{opacity:.42}
+.stepCard.overLimit:not(.selected){border-color:#334257;border-style:dashed}

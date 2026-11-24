@@ -210,7 +210,7 @@ public class MainActivity extends Activity {
    }catch(Exception e){log("Preview rejected: "+e.getMessage());}
   }
   @JavascriptInterface public void upload(String text,boolean replace){operate(()->{
-   try{JSONObject payload=new JSONObject(text);JSONArray array=payload.getJSONArray("frames");int count=array.length();if(count<1||count>200)throw new Exception("Use 1–200 steps");
+   try{JSONObject payload=new JSONObject(text);JSONArray array=payload.getJSONArray("frames");int count=array.length();if(count<1||count>10)throw new Exception("Use 1–10 steps");
     JSONArray requested=payload.optJSONArray("targets");List<Integer> targets=new ArrayList<>();
     if(requested==null){for(int i=0;i<4;i++)targets.add(i);}else{if(requested.length()<1||requested.length()>4)throw new Exception("Choose 1–4 displays");for(int i=0;i<requested.length();i++){int index=requested.getInt(i);if(index<0||index>3||targets.contains(index))throw new Exception("Invalid or duplicate destination");targets.add(index);}}
     byte[][][] rgb=new byte[4][count][];

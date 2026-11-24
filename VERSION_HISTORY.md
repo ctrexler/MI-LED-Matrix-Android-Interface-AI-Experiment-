@@ -1,5 +1,10 @@
 # LED Matrix Controller Version History
 
+## 0.5.8 — 2026-11-24
+- Updated hardware upload and Stored Images limits to 10 images per display (`MainActivity.upload()`, `sendSelected()`, `addStoredFromLibrary()`, `copyStoredImage()`).
+- Visually dimmed steps 11+ in the Editor and Library filmstrips while keeping them available for Live Preview.
+- Updated `decodeGif()` and `openGifEditor()` to proportionally sample all GIF frames down to 25, then keep 10 evenly spaced frames active (with the rest greyed out and toggleable).
+
 ## 0.5.7 — 2026-11-24
 - Added per-display **Connect / Disconnect** buttons on Displays cards.
 - Added **Simulate calibration on phone preview** toggle and a collapsible **Phone preview** bar in the Editor.

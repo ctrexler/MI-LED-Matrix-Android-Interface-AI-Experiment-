@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION='0.5.7';
+const APP_VERSION='0.5.8';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 let db={version:3,sequences:[],assignments:['','','',''],layout:2,autoConnect:false,previewCollapsed:false,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100,simulate:false},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
@@ -176,10 +176,10 @@ function renderGrid(){
    let track=el('div',undefined,'laneTrack');
    trackElements.push(track);
    current.steps.forEach((f,i)=>{
-    let card=el('div',undefined,'laneCard stepCard'+(i===selected?' selected':'')+(playback&&playback.kind==='editor'&&i===selected?' playing':''));
+    let card=el('div',undefined,'laneCard stepCard'+(i===selected?' selected':'')+(i>=10?' overLimit':'')+(playback&&playback.kind==='editor'&&i===selected?' playing':''));
     card.dataset.id=f.id;card.tabIndex=0;card.setAttribute('aria-label','Step '+(i+1)+' Display '+(d+1));
     let top=el('div',undefined,'laneCardTop');
-    top.append(el('small','#'+(i+1)));
+    top.append(el('small','#'+(i+1)));if(i>=10)top.append(el('small','Live'));
     let tileBox=el('div',undefined,'laneTile'+(!f.tiles[d]?' empty':''));
     if(f.tiles[d]){
      let img=document.createElement('img');img.alt='';img.draggable=false;displayTileSrc(img,f.tiles[d]);tileBox.append(img);
@@ -214,9 +214,9 @@ function renderGrid(){
  }else{
   g.className='storyboard';
   current.steps.forEach((f,i)=>{
-   let card=el('div',undefined,'stepCard'+(i===selected?' selected':'')+(playback&&playback.kind==='editor'&&i===selected?' playing':''));
+   let card=el('div',undefined,'stepCard'+(i===selected?' selected':'')+(i>=10?' overLimit':'')+(playback&&playback.kind==='editor'&&i===selected?' playing':''));
    card.dataset.id=f.id;card.tabIndex=0;card.setAttribute('aria-label','Step '+(i+1)+'. Enter for options. Hold to reorder.');
-   let top=el('div',undefined,'cardTop');top.append(el('span',String(i+1)),el('span',f.mode==='panels'?'Panels':f.mode==='repeat'?'Repeat':'Spanning'));
+   let top=el('div',undefined,'cardTop');top.append(el('span',String(i+1)),el('span',(i>=10?'Live · ':'')+(f.mode==='panels'?'Panels':f.mode==='repeat'?'Repeat':'Spanning')));
    card.append(top,makeWall(f,db.layout));
    card.onpointerdown=e=>dragStart(e,card);
    card.onclick=e=>{
@@ -228,7 +228,7 @@ function renderGrid(){
   });
   let add=button('',addStep,'addCard');add.id='addCard';add.append(el('span','+'),el('small','Add step'));add.disabled=busy||working;g.append(add);g.scrollTop=scroll;
  }
- $('count').textContent=current.steps.length+'/200';
+ $('count').textContent=current.steps.length+' steps'+(current.steps.length>10?' (10 stored max)':'');
 }
 
 function renderPreview(){
@@ -538,7 +538,7 @@ function decodeGif(buffer,maxFrames=25){
     if(blk.length>=4){gce.disposal=(blk[0]>>2)&7;gce.trans=!!(blk[0]&1);gce.transIdx=blk[3];}
    }else readBlocks();
   }else if(sep===0x2C){
-   if(frames.length>=maxFrames){truncated=true;break;}
+   if(frames.length>=300){truncated=true;break;}
    let left=u16(p),top=u16(p+2),w=u16(p+4),h=u16(p+6),ip=b[p+8];p+=9;
    let ct=gct;if(ip&0x80){let sz=1<<((ip&7)+1);ct=b.subarray(p,p+sz*3);p+=sz*3;}
    let minCode=b[p++],raw=readBlocks();
@@ -560,6 +560,14 @@ function decodeGif(buffer,maxFrames=25){
    else if(gce.disposal===3&&prev)ctx.putImageData(prev,0,0);
    gce={disposal:0,trans:false,transIdx:0};
   }else break;
+ }
+ if(frames.length>maxFrames){
+  let sampled=[];
+  for(let k=0;k<maxFrames;k++){
+   let idx=maxFrames===1?0:Math.round(k*(frames.length-1)/(maxFrames-1));
+   sampled.push(frames[idx]);
+  }
+  frames=sampled;truncated=true;
  }
  return {frames,truncated,small:width<16||height<16};
 }
@@ -620,11 +628,17 @@ function openSource(id,index){if(busy||working)return;let f=current.steps.find(x
 
 function openGifEditor(opts){
  let groupId=opts.groupId,target=opts.target,layer=opts.layer==='bg'?'bg':'fg',insertIndex=opts.insertIndex,frames=clone(opts.frames),fit=opts.fit||db.defaults.fit,smooth=!!opts.smooth;
+ if(opts.isNew&&frames.length>10){
+  let keep=new Set();
+  for(let k=0;k<10;k++)keep.add(Math.round(k*(frames.length-1)/9));
+  frames.forEach((fr,idx)=>{fr.deleted=!keep.has(idx);});
+ }
  let alignState={fit,alignX:Number.isFinite(opts.alignX)?opts.alignX:0.5,alignY:Number.isFinite(opts.alignY)?opts.alignY:0.5,zoom:Number.isFinite(opts.zoom)?opts.zoom:1};
  openSheet(groupId?'Edit GIF animation':(layer==='bg'?'Preview background GIF':'Preview GIF frames'));
  let session={gif:true,playing:true,animIdx:0,timer:null,rev:0};editorSession=session;
  const b=$('sheetBody');
- if(opts.truncated)b.append(hint('GIF has more than 25 frames; showing the first 25 frames.'));
+ if(opts.truncated)b.append(hint('GIF frames were proportionally reduced to '+frames.length+' frames.'));
+ if(opts.isNew&&frames.length>10)b.append(hint('Displays store up to 10 frames; 10 evenly spaced frames are active and the rest are greyed out (tap ↺/✕ to swap).'));
  b.append(hint((target==='span'?'Spanning all 4 displays':target==='repeat'?'Repeating on all 4 displays':'Display '+(target+1))+' · Tap a frame to preview, ◀/▶ to reorder, ✕ to delete or ↺ to restore.'));
  let previewBox=el('div',undefined,'gifPreviewBox');
  let previewWrap=el('div',undefined,(target==='span'||target==='repeat')?'gifPreviewWall':'gifPreviewSingle');
@@ -1244,7 +1258,7 @@ function renderLibrary(){
  db.sequences.forEach(s=>{
   let card=el('article',undefined,'libraryCard');card.dataset.id=s.id;
   let title=el('div',undefined,'row');title.append(el('h3',s.name),el('small',s.steps.length+' steps','muted'));card.append(title);
-  let strip=el('div',undefined,'filmstrip');s.steps.forEach((f,i)=>{let frame=el('div',undefined,'filmFrame');frame.append(el('small',String(i+1)),makeWall(f,2,false));strip.append(frame);});card.append(strip);
+  let strip=el('div',undefined,'filmstrip');s.steps.forEach((f,i)=>{let frame=el('div',undefined,'filmFrame'+(i>=10?' overLimit':''));frame.append(el('small',String(i+1)),makeWall(f,2,false));strip.append(frame);});card.append(strip);
   let row=el('div',undefined,'row');
   row.append(button('Open',()=>{if(busy||working)return;if(dirty&&current.steps.length&&!confirm('Replace the active draft with this saved sequence?'))return;pausePlayback();clearHistory();current=clone(s);selected=0;dirty=false;imageCache.clear();renderEditor();showPage('editor');draftSoon();previewCurrent(true);}),button('Preview on displays',()=>startPlayback('library',s),'primary'),button('More',()=>libraryOptions(s)));
   row.querySelectorAll('button').forEach(b=>b.disabled=busy);card.append(row);list.append(card);
@@ -1425,6 +1439,7 @@ function sendPanel(){
  if(busy||working)return;if(!current.steps.length)return notify('Add a step first.');
  chooseTargets('Send stored slideshow',null,(b,getIds)=>{
   b.append(hint('Replace clears selected displays. Append keeps the existing device command sequence unchanged.'));
+  if(current.steps.length>10)b.append(hint('Displays hold up to 10 stored images; only the first 10 steps will be uploaded (steps 11+ are skipped).'));
   buttons(b,[['Replace selected',()=>sendSelected(true,getIds()),'danger'],['Append to selected',()=>sendSelected(false,getIds())]]);
  });
 }
@@ -1432,12 +1447,12 @@ function sendPanel(){
 async function sendSelected(replace,ids,custom=null){
  if(busy||working)return;if(!ids.length||ids.some(i=>!ready[i]))return notify('Select at least one ready display.');
  if(!confirm((replace?'Erase and replace images on ':'Append images to ')+ids.map(i=>'Display '+(i+1)).join(', ')+(replace?'? This cannot be undone.':'?')))return;
- const frames=custom?null:clone(current.steps);closeSheet(false);flushDraft();pausePlayback();setBusy(true);let oldStored;
+ const frames=custom?null:clone(current.steps.slice(0,10));closeSheet(false);flushDraft();pausePlayback();setBusy(true);let oldStored;
  try{
   let rows=[],per={};
   if(custom){for(let i of ids)per[i]=custom.map(t=>t||'');}
   else for(let i of ids)per[i]=frames.map(f=>f.tiles[i]||'');
-  let count=per[ids[0]].length;if(count<1||count>200)throw Error('Use 1–200 images');
+  let count=per[ids[0]].length;if(count<1||count>10)throw Error('Displays hold 1–10 stored images');
   for(let f=0;f<count;f++){let row=[null,null,null,null];for(let i of ids)row[i]=await rgbTile(per[i][f]);rows.push(row);}
   ensureStorage();oldStored=clone(db.stored);let pending={};
   for(let i of ids){
@@ -1495,13 +1510,13 @@ function renderStored(){
 function addStoredFromLibrary(){
  if(busy||working)return;openSheet('Add from a saved sequence');let b=$('sheetBody');b.append(hint('Adds this display’s rendered tile from each sequence step to the local replacement draft.'));
  if(!db.sequences.length)b.append(hint('Save a sequence to Library first.'));
- for(let seq of db.sequences)b.append(button(seq.name+' · '+seq.steps.length+' images',()=>{if((storageDraft||[]).length+seq.steps.length>200)return notify('Maximum 200 images per rewritten collection.');storageDraft=storageDraft||[];storageDraft.push(...seq.steps.map((f,k)=>({id:uid(),tile:f.tiles[storedSlot]||'',name:seq.name+' / '+(k+1)})));closeSheet(false);renderStored();}));
+ for(let seq of db.sequences)b.append(button(seq.name+' · '+seq.steps.length+' images',()=>{if((storageDraft||[]).length+seq.steps.length>10)return notify('Maximum 10 images per display collection.');storageDraft=storageDraft||[];storageDraft.push(...seq.steps.map((f,k)=>({id:uid(),tile:f.tiles[storedSlot]||'',name:seq.name+' / '+(k+1)})));closeSheet(false);renderStored();}));
 }
 
 function copyStoredImage(item){
  openSheet('Copy image to a display draft');let b=$('sheetBody');
  for(let i=0;i<4;i++)if(i!==storedSlot){
-  b.append(button('Display '+(i+1),()=>{let r=record(i);if(!address(i))return notify('Assign this display first.');if(r.images.length>=200)return notify('Destination already has 200 tracked images.');if(r.status!=='tracked'&&!confirm('Destination contents are not fully known. Applying its draft will replace all its device images. Continue?'))return;storedSlot=i;storageDraft=clone(r.images);storageDraft.push({...clone(item),id:uid()});closeSheet(false);showPage('stored');}));
+  b.append(button('Display '+(i+1),()=>{let r=record(i);if(!address(i))return notify('Assign this display first.');if(r.images.length>=10)return notify('Destination already has 10 tracked images.');if(r.status!=='tracked'&&!confirm('Destination contents are not fully known. Applying its draft will replace all its device images. Continue?'))return;storedSlot=i;storageDraft=clone(r.images);storageDraft.push({...clone(item),id:uid()});closeSheet(false);showPage('stored');}));
  }
 }
 
