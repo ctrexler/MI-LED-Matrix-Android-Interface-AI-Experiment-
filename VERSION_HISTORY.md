@@ -1,5 +1,12 @@
 # LED Matrix Controller Version History
 
+## 0.5.7 — 2026-11-24
+- Added per-display **Connect / Disconnect** buttons on Displays cards.
+- Added **Simulate calibration on phone preview** toggle and a collapsible **Phone preview** bar in the Editor.
+- Added **Undo / Redo** (20-step history) and **Copy / mirror tile** actions across displays and steps.
+- Removed the temporary **Fast parallel upload (test mode)** toggle (fast parallel upload is now always used).
+- Scoped horizontal/vertical position sliders to **Original size (1:1)**, added a **Zoom (1:1)** slider (25%–400%), and enabled horizontal touch-scrolling in **One per line** mode.
+
 ## 0.5.6 — 2026-11-24
 - Added connection status outline colors on Displays cards (default for unconnected, flashing yellow for connecting, solid green for connected, red for disconnected).
 - Replaced the header `x/4` text badge with a layout-matching mini status grid (`2×2`, `4 across`, or `4 stacked`).

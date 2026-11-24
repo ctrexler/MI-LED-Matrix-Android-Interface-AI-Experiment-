@@ -199,6 +199,7 @@ public class MainActivity extends Activity {
   @JavascriptInterface public void scan(){ui.post(()->{if(busy.get()||!bluetooth()){js("scanFinished()");return;}stopScan();ui.removeCallbacks(stopScanTask);found.clear();js("clearDevices()");scanner=adapter.getBluetoothLeScanner();try{scanner.startScan(scanCallback);ui.postDelayed(stopScanTask,10000);}catch(Exception e){log(e.toString());js("scanFinished()");}});}
   @JavascriptInterface public void stopScanNow(){ui.post(()->{stopScan();ui.removeCallbacks(stopScanTask);});}
   @JavascriptInterface public void connectDisplay(int index,String address){ui.post(()->{if(!busy.get())cancelled=false;connect(index,address);});}
+  @JavascriptInterface public void disconnectDisplay(int index){ui.post(()->{if(index>=0&&index<4)close(index);});}
   @JavascriptInterface public void disconnect(){liveAllowed=false;clearPreviews();ui.post(()->{cancelled=true;stopScan();for(int index=0;index<4;index++)close(index);});}
   @JavascriptInterface public void cancel(){cancelled=true;log("Cancel requested; previous storage changes cannot be undone.");}
   @JavascriptInterface public void setLive(boolean enabled){liveAllowed=enabled;if(!enabled)clearPreviews();else if(!busy.get()){cancelled=false;schedulePreview();}}

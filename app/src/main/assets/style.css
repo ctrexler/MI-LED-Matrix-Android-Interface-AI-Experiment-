@@ -97,3 +97,12 @@
 .deviceCard.statusConnecting{border-color:#f5c542;animation:pulseYellowBorder 1s ease-in-out infinite}
 @keyframes pulseYellowBorder{0%,100%{border-color:#f5c542}50%{border-color:#5c4b18}}
 @keyframes pulseYellowDot{0%,100%{background:#f5c542;border-color:#f5c542;opacity:1}50%{background:#5c4b18;border-color:#8a7024;opacity:.45}}
+.histBtn{min-width:34px;min-height:36px;padding:4px 7px;font-size:15px;line-height:1}
+.previewHead{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.miniBtn{min-height:28px;min-width:30px;padding:2px 7px;font-size:12px;line-height:1;border-radius:7px}
+.preview.collapsed{min-height:0;padding:6px 10px}
+.preview.collapsed .previewLeft,.preview.collapsed .controls,.preview.collapsed #liveState{display:none}
+.preview.collapsed .previewRight{flex-direction:row;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.preview.collapsed .previewHead{order:3}
+.preview.collapsed .toggle{min-height:30px;font-size:12px}
+.preview.collapsed .previewHead b{font-size:12px}
