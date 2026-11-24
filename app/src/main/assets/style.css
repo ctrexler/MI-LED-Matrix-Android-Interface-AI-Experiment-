@@ -78,3 +78,22 @@
 .colorTransBtn.active{background:var(--accent);color:#112539;border-color:var(--accent);font-weight:650}
 .colorItem input[type=color].isTransparent{opacity:.3}
 .bgColorRow{display:flex;align-items:center;gap:8px;margin-top:4px}
+.badge{display:flex;align-items:center;justify-content:center;min-width:42px;padding:5px 8px}
+.connGrid{display:grid;gap:2px}
+.connGrid.cols2{grid-template-columns:repeat(2,10px)}
+.connGrid.cols4{grid-template-columns:repeat(4,8px)}
+.connGrid.cols1{grid-template-columns:repeat(1,8px)}
+.connDot{width:10px;height:10px;border-radius:2px;border:1.5px solid var(--muted);background:transparent}
+.connGrid.cols4 .connDot{width:8px;height:8px}
+.connGrid.cols1 .connDot{width:8px;height:6px}
+.connDot.statusUnconnected{border-color:var(--muted);background:transparent}
+.connDot.statusConnected{border-color:#4ade80;background:#4ade80}
+.connDot.statusDisconnected{border-color:#f06464;background:#f06464}
+.connDot.statusConnecting{border-color:#f5c542;background:#f5c542;animation:pulseYellowDot 1s ease-in-out infinite}
+.deviceCard{border-width:2px;transition:border-color .2s}
+.deviceCard.statusUnconnected{border-color:var(--line)}
+.deviceCard.statusConnected{border-color:#4ade80}
+.deviceCard.statusDisconnected{border-color:#f06464}
+.deviceCard.statusConnecting{border-color:#f5c542;animation:pulseYellowBorder 1s ease-in-out infinite}
+@keyframes pulseYellowBorder{0%,100%{border-color:#f5c542}50%{border-color:#5c4b18}}
+@keyframes pulseYellowDot{0%,100%{background:#f5c542;border-color:#f5c542;opacity:1}50%{background:#5c4b18;border-color:#8a7024;opacity:.45}}

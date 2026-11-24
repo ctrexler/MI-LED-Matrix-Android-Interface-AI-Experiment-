@@ -1,7 +1,7 @@
 "use strict";
-const APP_VERSION='0.5.5';
+const APP_VERSION='0.5.6';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
-let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
+let db={version:3,sequences:[],assignments:['','','',''],layout:2,autoConnect:false,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
 let states=['Not connected','Not connected','Not connected','Not connected'],ready=[false,false,false,false];
 let playback=null,playTimer=null,frameEpoch=0,liveTimer=null,pendingTiles=[undefined,undefined,undefined,undefined],lastTiles=[undefined,undefined,undefined,undefined],liveVersions=[0,0,0,0];
@@ -1190,6 +1190,26 @@ async function receiveBackup(text){
  finally{working=false;}
 }
 
+function displayStatusClass(i){
+ if(ready[i])return 'statusConnected';
+ let s=(states[i]||'').toLowerCase();
+ if(s.startsWith('connecting')||s.startsWith('negotiating'))return 'statusConnecting';
+ if(s==='not connected'||!db.assignments[i])return 'statusUnconnected';
+ return 'statusDisconnected';
+}
+
+function renderConnectionBadge(){
+ let grid=$('connGrid'),btn=$('connectionBtn');
+ if(!grid||!btn)return;
+ let cols=[1,2,4].includes(db.layout)?db.layout:2;
+ grid.className='connGrid cols'+cols;
+ grid.replaceChildren();
+ for(let i=0;i<4;i++)grid.append(el('span',undefined,'connDot '+displayStatusClass(i)));
+ let count=ready.filter(Boolean).length;
+ btn.title=count+'/4 connected';
+ btn.setAttribute('aria-label',count+' of 4 displays connected');
+}
+
 function renderAssignments(){
  let out=$('assignments');out.replaceChildren();
  out.className='assignmentsGrid';
@@ -1197,13 +1217,14 @@ function renderAssignments(){
  out.style.gridTemplateColumns='repeat('+db.layout+',minmax(0,1fr))';
  out.style.gap='10px';
  for(let i=0;i<4;i++){
-  let c=el('article',undefined,'deviceCard');
+  let c=el('article',undefined,'deviceCard '+displayStatusClass(i));c.id='deviceCard'+i;
   c.append(el('h3','Display '+(i+1)),el('p',db.assignments[i]||'Not assigned','muted'));
   let state=el('p',states[i],'deviceStatus');state.id='status'+i;c.append(state);
   let row=el('div',undefined,'row');
   row.append(button('Scan / assign',()=>scanFor(i)),button('Forget',()=>{if(!confirm('Forget this assignment and close all connections?'))return;setLive(false);Native.disconnect();db.assignments[i]='';store();renderAssignments();}));
   c.append(row);out.append(c);
  }
+ renderConnectionBadge();
 }
 
 function scanFor(i){
@@ -1226,12 +1247,13 @@ function deviceFound(address,name){
 
 function setStatus(i,text,isReady=false){
  let was=ready[i];states[i]=text;ready[i]=isReady;let n=$('status'+i);if(n)n.textContent=text;
- $('connectionBtn').textContent=ready.filter(Boolean).length+'/4';renderPreview();
+ let card=$('deviceCard'+i);if(card)card.className='deviceCard '+displayStatusClass(i);
+ renderConnectionBadge();renderPreview();
  if(!was&&isReady&&live){lastTiles[i]=undefined;let f=playback?playback.sequence.steps[playback.index]:current.steps[selected];queueTiles(f?f.tiles:['','','',''],[i],true);}
  if(page==='stored')renderStored();
 }
 
-function reconnect(){if(busy)return;db.assignments.forEach((a,i)=>{if(a)Native.connectDisplay(i,a);});notify('Connecting saved displays. Check readiness in Displays.');}
+function reconnect(silent=false){if(busy)return;let hasAny=db.assignments.some(Boolean);if(!hasAny)return;db.assignments.forEach((a,i)=>{if(a)Native.connectDisplay(i,a);});if(silent)log('Auto-connecting saved displays…');else notify('Connecting saved displays. Check readiness in Displays.');}
 
 function setBusy(value){
  busy=value;if(value){pausePlayback();clearPending();}
@@ -1389,6 +1411,7 @@ async function init(){
    db.sequences=v.sequences.map(normalizeSequence);
    if(Array.isArray(v.assignments)&&v.assignments.length===4)db.assignments=v.assignments.map(a=>typeof a==='string'?a:'');
    if([1,2,4].includes(v.layout))db.layout=v.layout;
+   db.autoConnect=!!v.autoConnect;
    if(v.editorView&&['all','separate'].includes(v.editorView))db.editorView=v.editorView;
    if(v.defaults&&['contain','cover','stretch'].includes(v.defaults.fit))db.defaults={fit:v.defaults.fit,smooth:!!v.defaults.smooth};
    if(v.calibration&&typeof v.calibration==='object'){
@@ -1440,6 +1463,7 @@ async function init(){
  $('liveToggle').onchange=()=>setLive($('liveToggle').checked);
  $('layout').value=db.layout;
  $('layout').onchange=changeLayout;
+ if($('autoConnectToggle')){$('autoConnectToggle').checked=!!db.autoConnect;$('autoConnectToggle').onchange=()=>{db.autoConnect=$('autoConnectToggle').checked;store();};}
  function syncCalUI(){
   let cal=db.calibration||{gamma:2.2,cutoff:0,brightness:100};
   if($('gammaSlider')){$('gammaSlider').value=cal.gamma;$('gammaVal').textContent=Number(cal.gamma).toFixed(1);}
@@ -1474,6 +1498,7 @@ async function init(){
  document.addEventListener('visibilitychange',()=>{if(document.hidden){pausePlayback();flushDraft();}});
  renderEditor();renderAssignments();updateSaveState();
  log('LED Matrix Controller '+APP_VERSION+' ready. Live Preview starts off; enable it to send temporary images.');
+ if(db.autoConnect&&db.assignments.some(Boolean))setTimeout(()=>{if(db.autoConnect&&!busy)reconnect(true);},350);
  setTimeout(()=>{if(Native.checkUpdate)Native.checkUpdate(true);},1500);
 }
 

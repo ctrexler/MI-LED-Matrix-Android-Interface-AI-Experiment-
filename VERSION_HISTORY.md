@@ -1,5 +1,10 @@
 # LED Matrix Controller Version History
 
+## 0.5.6 — 2026-11-24
+- Added connection status outline colors on Displays cards (default for unconnected, flashing yellow for connecting, solid green for connected, red for disconnected).
+- Replaced the header `x/4` text badge with a layout-matching mini status grid (`2×2`, `4 across`, or `4 stacked`).
+- Added an **Auto-connect assigned displays on app load** toggle on the Displays page.
+
 ## 0.5.5 — 2026-11-24
 - Parallelized Live Preview packet writes across all 4 per-display BLE lanes (`lanes[0..3]`) while keeping block-by-block lockstep synchronization.
 - Added parallel stored slideshow uploads with a temporary **Fast parallel upload (test mode)** toggle in Send to displays.
