@@ -183,7 +183,9 @@ public class MainActivity extends Activity {
     }
     for(Future<Void> f:hdrs)try{await(f);}catch(Exception ignored){}
     // Step 2: Send blocks 0 to 6 in parallel per block across displays
-    boolean anyAckSupported=false;
+    boolean anyAckSupported=false;int activeCount=0;
+    for(int i=0;i<4;i++)if(frames[i]!=null&&isReady(i))activeCount++;
+    long blockPace=activeCount>1?15:0;
     for(int block=0;block<7;block++){
      if(!liveAllowed||busy.get()||destroyed)break;
      final int b=block;final boolean useAck=(block==6);
@@ -195,15 +197,15 @@ public class MainActivity extends Activity {
        if(lk!=null&&lk.characteristic!=null&&(lk.characteristic.getProperties()&BluetoothGattCharacteristic.PROPERTY_WRITE)!=0)anyAckSupported=true;
        step.add(submitLane(idx,()->{
         if(!liveAllowed||busy.get()||destroyed)return;
-        try{write(idx,livePacket(b,tile),0,useAck);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+        try{write(idx,livePacket(b,tile),blockPace,useAck);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
        }));
       }
      }
      for(Future<Void> f:step)try{await(f);}catch(Exception ignored){}
     }
     if(!liveAllowed||busy.get()||destroyed)break;
-    // If displays only support WRITE_NO_RESPONSE, allow HCI TX buffers to drain before firing block 7
-    if(!anyAckSupported)try{Thread.sleep(40);}catch(InterruptedException ignored){}
+    // Displays are WRITE_NO_RESPONSE only (properties=4): allow HCI TX buffers to fully drain before firing block 7
+    if(!anyAckSupported&&activeCount>1)try{Thread.sleep(100);}catch(InterruptedException ignored){}
     // Step 3: Fire final trigger block 7 simultaneously across all ready displays using a start gate
     final CountDownLatch gate=new CountDownLatch(1);
     List<Future<Void>> fin=new ArrayList<>();
@@ -212,7 +214,7 @@ public class MainActivity extends Activity {
      if(tile!=null&&isReady(idx))fin.add(submitLane(idx,()->{
       try{gate.await();}catch(InterruptedException ignored){return;}
       if(!liveAllowed||busy.get()||destroyed)return;
-      try{write(idx,livePacket(7,tile),0);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+      fastWrite(idx,livePacket(7,tile));
      }));
     }
     gate.countDown();
