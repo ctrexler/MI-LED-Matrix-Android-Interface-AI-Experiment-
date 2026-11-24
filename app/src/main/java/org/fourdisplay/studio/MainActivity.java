@@ -18,6 +18,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
 public class MainActivity extends Activity {
@@ -142,7 +143,7 @@ public class MainActivity extends Activity {
  private void clearPreviews(){synchronized(previewLock){Arrays.fill(pendingPreview,null);}}
  private boolean hasAnyPreview(){synchronized(previewLock){for(int i=0;i<4;i++)if(pendingPreview[i]!=null)return true;return false;}}
 
- // Interleaved round-robin live preview: transmits block-by-block across all displays so they refresh simultaneously.
+ // Parallel interleaved live preview across per-display lanes so all displays refresh fast and in lockstep.
  private void schedulePreview(){
   if(destroyed||busy.get()||!liveAllowed||!previewRunning.compareAndSet(false,true))return;
   try{previewWorker.execute(()->{
@@ -150,22 +151,29 @@ public class MainActivity extends Activity {
     byte[][] frames=new byte[4][];boolean hasData=false;
     synchronized(previewLock){for(int i=0;i<4;i++){frames[i]=pendingPreview[i];pendingPreview[i]=null;if(frames[i]!=null)hasData=true;}}
     if(!hasData)break;
-    // Step 1: Send FRAME header to each display that has new tile data
+    // Step 1: Send FRAME header in parallel across displays that have new tile data
+    List<Future<Void>> hdrs=new ArrayList<>();
     for(int i=0;i<4;i++){
-     if(!liveAllowed||busy.get()||destroyed)break;
-     if(frames[i]!=null&&isReady(i)){
-      try{write(i,FRAME,2);}catch(Exception e){log("Live D"+(i+1)+": "+e.getMessage());js("liveError("+i+")");}
-     }
+     final int idx=i;final byte[] tile=frames[i];
+     if(tile!=null&&isReady(idx))hdrs.add(submitLane(idx,()->{
+      if(!liveAllowed||busy.get()||destroyed)return;
+      try{write(idx,FRAME,0);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+     }));
     }
-    // Step 2: Send blocks 0 to 7 round-robin across displays so all displays receive their final block in lockstep
+    for(Future<Void> f:hdrs)try{await(f);}catch(Exception ignored){}
+    // Step 2: Send blocks 0 to 7 in parallel per block across displays so all finish in lockstep
     for(int block=0;block<8;block++){
      if(!liveAllowed||busy.get()||destroyed)break;
+     final int b=block;
+     List<Future<Void>> step=new ArrayList<>();
      for(int i=0;i<4;i++){
-      if(!liveAllowed||busy.get()||destroyed)break;
-      if(frames[i]!=null&&isReady(i)){
-       try{write(i,livePacket(block,frames[i]),2);}catch(Exception e){log("Live D"+(i+1)+": "+e.getMessage());js("liveError("+i+")");}
-      }
+      final int idx=i;final byte[] tile=frames[i];
+      if(tile!=null&&isReady(idx))step.add(submitLane(idx,()->{
+       if(!liveAllowed||busy.get()||destroyed)return;
+       try{write(idx,livePacket(b,tile),0);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+      }));
      }
+     for(Future<Void> f:step)try{await(f);}catch(Exception ignored){}
     }
    }}finally{previewRunning.set(false);if(!destroyed&&!busy.get()&&liveAllowed&&hasAnyPreview())schedulePreview();}
   });}catch(RejectedExecutionException ignored){previewRunning.set(false);}
@@ -206,16 +214,40 @@ public class MainActivity extends Activity {
     if(requested==null){for(int i=0;i<4;i++)targets.add(i);}else{if(requested.length()<1||requested.length()>4)throw new Exception("Choose 1–4 displays");for(int i=0;i<requested.length();i++){int index=requested.getInt(i);if(index<0||index>3||targets.contains(index))throw new Exception("Invalid or duplicate destination");targets.add(index);}}
     byte[][][] rgb=new byte[4][count][];
     for(int display:targets){Link link=links.get(display);if(link==null||!link.ready)throw new Exception("D"+(display+1)+" must be ready");for(int frame=0;frame<count;frame++){rgb[display][frame]=Base64.decode(array.getJSONArray(frame).getString(display),Base64.DEFAULT);if(rgb[display][frame].length!=768)throw new Exception("Invalid tile");}}
+    boolean fast=payload.optBoolean("fast",false);
     waitForIdleLanes();
-    // Sequential clear and upload per display
-    int total=targets.size()*count*12+(replace?targets.size():0),done=0;
-    if(replace)for(int display:targets){final int index=display;log("Clearing D"+(index+1));await(submitLane(index,()->write(index,CLEAR,1000)));done++;js("progress("+done+","+total+")");}
-    for(int display:targets){for(int frame=0;frame<count;frame++){
-     final int index=display;final byte[] pixels=rgb[display][frame];js("transferLabel("+JSONObject.quote("Display "+(display+1)+" · Image "+(frame+1)+"/"+count)+")");
-     await(submitLane(index,()->write(index,BEGIN,200)));done++;await(submitLane(index,()->write(index,FRAME,200)));done++;
-     for(int block=0;block<8;block++){final byte[] packet=storePacket(block,pixels);await(submitLane(index,()->write(index,packet,80)));done++;js("progress("+done+","+total+")");}
-     await(submitLane(index,()->write(index,COMMIT,200)));done++;await(submitLane(index,()->write(index,END,1000)));done++;js("progress("+done+","+total+")");
-    }js("storageDisplayComplete("+display+")");}
+    int total=targets.size()*count*12+(replace?targets.size():0);
+    if(fast){
+     final AtomicInteger done=new AtomicInteger(0);
+     js("transferLabel("+JSONObject.quote("Fast parallel upload · "+count+" images")+")");
+     List<Future<Void>> tasks=new ArrayList<>();
+     for(int display:targets){
+      final int index=display;
+      tasks.add(submitLane(index,()->{
+       if(replace){write(index,CLEAR,150);js("progress("+done.incrementAndGet()+","+total+")");}
+       for(int frame=0;frame<count;frame++){
+        final byte[] pixels=rgb[index][frame];
+        write(index,BEGIN,10);done.incrementAndGet();
+        write(index,FRAME,10);done.incrementAndGet();
+        for(int block=0;block<8;block++){write(index,storePacket(block,pixels),5);js("progress("+done.incrementAndGet()+","+total+")");}
+        write(index,COMMIT,10);done.incrementAndGet();
+        write(index,END,100);js("progress("+done.incrementAndGet()+","+total+")");
+       }
+       js("storageDisplayComplete("+index+")");
+      }));
+     }
+     for(Future<Void> t:tasks)await(t);
+    }else{
+     // Sequential clear and upload per display (conservative fallback)
+     int done=0;
+     if(replace)for(int display:targets){final int index=display;log("Clearing D"+(index+1));await(submitLane(index,()->write(index,CLEAR,1000)));done++;js("progress("+done+","+total+")");}
+     for(int display:targets){for(int frame=0;frame<count;frame++){
+      final int index=display;final byte[] pixels=rgb[display][frame];js("transferLabel("+JSONObject.quote("Display "+(display+1)+" · Image "+(frame+1)+"/"+count)+")");
+      await(submitLane(index,()->write(index,BEGIN,200)));done++;await(submitLane(index,()->write(index,FRAME,200)));done++;
+      for(int block=0;block<8;block++){final byte[] packet=storePacket(block,pixels);await(submitLane(index,()->write(index,packet,80)));done++;js("progress("+done+","+total+")");}
+      await(submitLane(index,()->write(index,COMMIT,200)));done++;await(submitLane(index,()->write(index,END,1000)));done++;js("progress("+done+","+total+")");
+     }js("storageDisplayComplete("+display+")");}
+    }
     js("notify('Upload commands completed. Playback has not started automatically.')");
    }catch(Exception e){js("notify("+JSONObject.quote("Upload stopped: "+e.getMessage())+")");}
    finally{js("storageUploadFinished()");}

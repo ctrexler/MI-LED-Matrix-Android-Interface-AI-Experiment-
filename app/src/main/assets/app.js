@@ -1,11 +1,11 @@
 "use strict";
-const APP_VERSION='0.5.4';
+const APP_VERSION='0.5.5';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
 let states=['Not connected','Not connected','Not connected','Not connected'],ready=[false,false,false,false];
 let playback=null,playTimer=null,frameEpoch=0,liveTimer=null,pendingTiles=[undefined,undefined,undefined,undefined],lastTiles=[undefined,undefined,undefined,undefined],liveVersions=[0,0,0,0];
-let storedSlot=0,storageDraft=null;
+let storedSlot=0,storageDraft=null,fastUpload=true;
 const imageCache=new Map();
 const extraPatterns=['heart','star','circle','square','diamond','triangle','arrow','diamonds','dots','zigzag'];
 
@@ -1267,6 +1267,9 @@ function sendPanel(){
  if(busy||working)return;if(!current.steps.length)return notify('Add a step first.');
  chooseTargets('Send stored slideshow',null,(b,getIds)=>{
   b.append(hint('Replace clears selected displays. Append keeps the existing device command sequence unchanged.'));
+  let fastChk=document.createElement('input');fastChk.type='checkbox';fastChk.checked=fastUpload;fastChk.onchange=()=>{fastUpload=fastChk.checked;};
+  let fastLbl=el('label',undefined,'check');fastLbl.append(fastChk,document.createTextNode('Fast parallel upload (test mode)'));
+  b.append(fastLbl);
   buttons(b,[['Replace selected',()=>sendSelected(true,getIds()),'danger'],['Append to selected',()=>sendSelected(false,getIds())]]);
  });
 }
@@ -1292,7 +1295,7 @@ async function sendSelected(replace,ids,custom=null){
   }
   db.pendingStorage=pending;
   if(!store()){db.stored=oldStored;delete db.pendingStorage;throw Error('Could not save tracking journal; upload not started.');}
-  progress(0,1);Native.upload(JSON.stringify({frames:rows,targets:ids}),replace);
+  progress(0,1);Native.upload(JSON.stringify({frames:rows,targets:ids,fast:!!fastUpload}),replace);
  }catch(e){if(oldStored){db.stored=oldStored;delete db.pendingStorage;store();}setBusy(false);notify('Upload preparation failed: '+e.message);}
 }
 

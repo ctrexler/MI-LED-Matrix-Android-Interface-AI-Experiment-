@@ -1,5 +1,9 @@
 # LED Matrix Controller Version History
 
+## 0.5.5 — 2026-11-24
+- Parallelized Live Preview packet writes across all 4 per-display BLE lanes (`lanes[0..3]`) while keeping block-by-block lockstep synchronization.
+- Added parallel stored slideshow uploads with a temporary **Fast parallel upload (test mode)** toggle in Send to displays.
+
 ## 0.5.4 — 2026-11-23
 - Replaced default WebView `"The page at 'file://' says:"` alert/confirm headers with native **LED Matrix Controller** dialogs.
 - Enabled **Background layer** support for animated GIFs (via the new-step Layer selector and Background layer editor).
