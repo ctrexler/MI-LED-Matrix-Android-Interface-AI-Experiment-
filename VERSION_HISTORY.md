@@ -1,5 +1,8 @@
 # LED Matrix Controller Version History
 
+## 0.5.8 — 2026-11-24
+- Added `CONNECTION_PRIORITY_HIGH` refresh before `block 7` and per-display Live Preview millisecond timing logs (`hdr/b6/b7`) to diagnose BLE sync behavior.
+
 ## 0.5.7 — 2026-11-24
 - Tuned Live Preview block pacing (`15 ms`) and pre-`block 7` HCI drain (`100 ms`) for `WRITE_NO_RESPONSE` (`properties = 4`) displays, plus `fastWrite` at the `block 7` start gate.
 

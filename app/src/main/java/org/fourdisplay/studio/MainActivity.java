@@ -172,13 +172,14 @@ public class MainActivity extends Activity {
     byte[][] frames=new byte[4][];boolean hasData=false;
     synchronized(previewLock){for(int i=0;i<4;i++){frames[i]=pendingPreview[i];pendingPreview[i]=null;if(frames[i]!=null)hasData=true;}}
     if(!hasData)break;
+    long t0=SystemClock.elapsedRealtime();long[] tHdr={-1,-1,-1,-1},tB6={-1,-1,-1,-1},tB7={-1,-1,-1,-1};
     // Step 1: Send FRAME header in parallel across displays that have new tile data
     List<Future<Void>> hdrs=new ArrayList<>();
     for(int i=0;i<4;i++){
      final int idx=i;final byte[] tile=frames[i];
      if(tile!=null&&isReady(idx))hdrs.add(submitLane(idx,()->{
       if(!liveAllowed||busy.get()||destroyed)return;
-      try{write(idx,FRAME,0);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+      try{write(idx,FRAME,0);tHdr[idx]=SystemClock.elapsedRealtime()-t0;}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
      }));
     }
     for(Future<Void> f:hdrs)try{await(f);}catch(Exception ignored){}
@@ -197,13 +198,16 @@ public class MainActivity extends Activity {
        if(lk!=null&&lk.characteristic!=null&&(lk.characteristic.getProperties()&BluetoothGattCharacteristic.PROPERTY_WRITE)!=0)anyAckSupported=true;
        step.add(submitLane(idx,()->{
         if(!liveAllowed||busy.get()||destroyed)return;
-        try{write(idx,livePacket(b,tile),blockPace,useAck);}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
+        try{write(idx,livePacket(b,tile),blockPace,useAck);if(b==6)tB6[idx]=SystemClock.elapsedRealtime()-t0;}catch(Exception e){log("Live D"+(idx+1)+": "+e.getMessage());js("liveError("+idx+")");}
        }));
       }
      }
      for(Future<Void> f:step)try{await(f);}catch(Exception ignored){}
     }
     if(!liveAllowed||busy.get()||destroyed)break;
+    if(activeCount>1){
+     for(int i=0;i<4;i++){if(frames[i]!=null&&isReady(i)){Link lk=links.get(i);if(lk!=null&&lk.gatt!=null)try{lk.gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);}catch(Exception ignored){}}}
+    }
     // Displays are WRITE_NO_RESPONSE only (properties=4): allow HCI TX buffers to fully drain before firing block 7
     if(!anyAckSupported&&activeCount>1)try{Thread.sleep(100);}catch(InterruptedException ignored){}
     // Step 3: Fire final trigger block 7 simultaneously across all ready displays using a start gate
@@ -214,11 +218,16 @@ public class MainActivity extends Activity {
      if(tile!=null&&isReady(idx))fin.add(submitLane(idx,()->{
       try{gate.await();}catch(InterruptedException ignored){return;}
       if(!liveAllowed||busy.get()||destroyed)return;
-      fastWrite(idx,livePacket(7,tile));
+      fastWrite(idx,livePacket(7,tile));tB7[idx]=SystemClock.elapsedRealtime()-t0;
      }));
     }
     gate.countDown();
     for(Future<Void> f:fin)try{await(f);}catch(Exception ignored){}
+    if(activeCount>1){
+     StringBuilder sb=new StringBuilder("Live ms (hdr/b6/b7):");
+     for(int i=0;i<4;i++)if(frames[i]!=null&&isReady(i))sb.append(" D").append(i+1).append("=").append(tHdr[i]).append("/").append(tB6[i]).append("/").append(tB7[i]);
+     log(sb.toString());
+    }
    }}finally{previewRunning.set(false);if(!destroyed&&!busy.get()&&liveAllowed&&hasAnyPreview())schedulePreview();}
   });}catch(RejectedExecutionException ignored){previewRunning.set(false);}
  }
