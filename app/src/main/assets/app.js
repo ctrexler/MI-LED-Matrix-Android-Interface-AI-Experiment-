@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION='0.9.0';
+const APP_VERSION='0.5.3';
 const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x)),uid=()=>Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
 let db={version:3,sequences:[],assignments:['','','',''],layout:2,defaults:{fit:'contain',smooth:false},calibration:{gamma:2.2,cutoff:0,brightness:100},previewSeconds:1.5,draft:null,stored:{}};
 let current,selected=0,dirty=true,page='editor',busy=false,working=false,live=false,editorSession=null,pickerCallback=null,scanSlot=0,scanSession=false,saveTimer=null;
@@ -11,7 +11,7 @@ const extraPatterns=['heart','star','circle','square','diamond','triangle','arro
 
 const blankFrame=()=>({id:uid(),mode:'panels',source:null,panels:[null,null,null,null],tiles:['','','',''],bgMode:'none',bgSource:null,bgPanels:[null,null,null,null]});
 const blankSequence=()=>({id:uid(),name:'New sequence',cols:db.layout,steps:[],gifGroups:{}});
-const imageSpec=src=>({type:'image',src,fit:db.defaults.fit,smooth:db.defaults.smooth});
+const imageSpec=(src,fit=db.defaults.fit)=>({type:'image',src,fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5});
 const patternSpec=()=>({type:'pattern',pattern:'gradient',a:'#ff3377',b:'#3377ff',colors:['#ff3377','#3377ff'],background:'#000000',direction:'diagonal',size:4,thickness:1,rotation:0,tiled:false,outline:false,spacing:0,cycle:false});
 const imageData=t=>typeof t==='string'&&t.length<=24_000_000&&/^data:image\/(png|jpeg|webp|gif|bmp|avif);base64,[A-Za-z0-9+/=]+$/.test(t);
 const isColor=c=>c==='transparent'||(typeof c==='string'&&/^#[0-9a-f]{6}$/i.test(c));
@@ -38,8 +38,10 @@ function normalizeSource(s){
   let thickness=Math.max(1,Math.min(8,Number(s.thickness)||1));
   return {type:'pattern',pattern:s.pattern,a,b,colors,background,direction,rotation,tiled,outline,cycle,spacing,size,thickness};
  }
- if(!imageData(s.src)||!['contain','cover','stretch'].includes(s.fit)||typeof s.smooth!=='boolean')throw Error('Invalid image');
- let img={type:'image',src:s.src,fit:s.fit,smooth:s.smooth};
+ if(!imageData(s.src)||!['contain','cover','stretch','actual'].includes(s.fit)||typeof s.smooth!=='boolean')throw Error('Invalid image');
+ let alignX=Number.isFinite(s.alignX)?Math.max(0,Math.min(1,s.alignX)):0.5;
+ let alignY=Number.isFinite(s.alignY)?Math.max(0,Math.min(1,s.alignY)):0.5;
+ let img={type:'image',src:s.src,fit:s.fit,smooth:s.smooth,alignX,alignY};
  if(typeof s.gifGroupId==='string')img.gifGroupId=s.gifGroupId;
  if(typeof s.gifFrameId==='string')img.gifFrameId=s.gifFrameId;
  return img;
@@ -53,9 +55,11 @@ function normalizeSequence(s){
   for(let [gid,g] of Object.entries(s.gifGroups)){
    if(!g||typeof g!=='object'||!Array.isArray(g.frames)||g.frames.length>25)continue;
    let target=(g.target==='span'||g.target==='repeat')?g.target:([0,1,2,3].includes(Number(g.target))?Number(g.target):'span');
-   let fit=['contain','cover','stretch'].includes(g.fit)?g.fit:'contain';
+   let fit=['contain','cover','stretch','actual'].includes(g.fit)?g.fit:'contain';
+   let alignX=Number.isFinite(g.alignX)?Math.max(0,Math.min(1,g.alignX)):0.5;
+   let alignY=Number.isFinite(g.alignY)?Math.max(0,Math.min(1,g.alignY)):0.5;
    let frames=g.frames.filter(fr=>fr&&typeof fr==='object'&&imageData(fr.src)).map(fr=>({id:typeof fr.id==='string'?fr.id:uid(),src:fr.src,deleted:!!fr.deleted}));
-   if(frames.length)gifGroups[gid]={id:gid,target,fit,smooth:!!g.smooth,frames};
+   if(frames.length)gifGroups[gid]={id:gid,target,fit,smooth:!!g.smooth,alignX,alignY,frames};
   }
  }
  return {id:typeof s.id==='string'?s.id:uid(),name:s.name.slice(0,100),cols,gifGroups,steps:s.steps.map(f=>{
@@ -296,8 +300,13 @@ function drawPattern(s,w,h,stepOffset=0,transparent=false){
  for(let y=0;y<h;y++)for(let z=0;z<w;z++){
   let n;
   if(s.pattern==='diamonds')n=Math.floor((Math.abs(z-(w-1)/2)+Math.abs(y-(h-1)/2))/size);
-  else if(s.pattern==='zigzag')n=Math.floor((y+Math.abs((z%(size*4))-size*2))/size);
-  else{let axis=s.direction==='vertical'?z:s.direction==='horizontal'?y:s.direction==='antidiagonal'?z-y+h:z+y;n=Math.floor(axis/size);}
+  else if(s.pattern==='zigzag'){
+   let p4=size*4,p2=size*2;
+   if(s.direction==='vertical')n=Math.floor((z+Math.abs((y%p4)-p2))/size);
+   else if(s.direction==='diagonal'){let u=z+y,v=z-y+h;n=Math.floor((u+Math.abs((v%p4)-p2))/size);}
+   else if(s.direction==='antidiagonal'){let u=z-y+h,v=z+y;n=Math.floor((u+Math.abs((v%p4)-p2))/size);}
+   else n=Math.floor((y+Math.abs((z%p4)-p2))/size);
+  }else{let axis=s.direction==='vertical'?z:s.direction==='horizontal'?y:s.direction==='antidiagonal'?z-y+h:z+y;n=Math.floor(axis/size);}
   let col=p[((n%p.length)+p.length)%p.length];
   if(col!=='transparent'){x.fillStyle=col;x.fillRect(z,y,1,1);}
  }
@@ -311,8 +320,10 @@ async function renderSource(s,w,h,stepOffset=0,transparent=false){
  x.imageSmoothingEnabled=s.smooth;x.imageSmoothingQuality='high';
  if(s.fit==='stretch')x.drawImage(i,0,0,w,h);
  else{
-  let scale=(s.fit==='cover'?Math.max:Math.min)(w/i.width,h/i.height),iw=Math.max(1,Math.round(i.width*scale)),ih=Math.max(1,Math.round(i.height*scale));
-  x.drawImage(i,Math.floor((w-iw)/2),Math.floor((h-ih)/2),iw,ih);
+  let scale=s.fit==='actual'?Math.min(1,w/i.width,h/i.height):(s.fit==='cover'?Math.max:Math.min)(w/i.width,h/i.height);
+  let iw=Math.max(1,Math.round(i.width*scale)),ih=Math.max(1,Math.round(i.height*scale));
+  let ax=Number.isFinite(s.alignX)?s.alignX:0.5,ay=Number.isFinite(s.alignY)?s.alignY:0.5;
+  x.drawImage(i,Math.round((w-iw)*ax),Math.round((h-ih)*ay),iw,ih);
  }
  return c;
 }
@@ -524,8 +535,21 @@ function decodeGif(buffer,maxFrames=25){
    gce={disposal:0,trans:false,transIdx:0};
   }else break;
  }
- return {frames,truncated};
+ return {frames,truncated,small:width<16||height<16};
 }
+
+function imageAlignControls(parent,obj,onChange){
+ const fmt=(v,low,high)=>v===0?low:v===1?high:v===0.5?'Center':Math.round(v*100)+'%';
+ for(let [key,title,low,high] of [['alignX','Horizontal position','Left','Right'],['alignY','Vertical position','Top','Bottom']]){
+  let cur=Number.isFinite(obj[key])?obj[key]:0.5;
+  let lbl=el('label',undefined,'calRow'),top=el('span',title),val=el('b',fmt(cur,low,high));
+  top.append(val);
+  let r=document.createElement('input');r.type='range';r.min=0;r.max=100;r.step=5;r.value=Math.round(cur*100);
+  r.oninput=()=>{let v=Number(r.value)/100;obj[key]=v;val.textContent=fmt(v,low,high);onChange();};
+  lbl.append(top,r);parent.append(lbl);
+ }
+}
+const FIT_OPTS=[['contain','Fit with black borders'],['actual','Original size (no upscale)'],['cover','Fill and crop'],['stretch','Stretch']];
 
 function pickImage(callback){if(busy||working)return;pickerCallback=callback;$('imagePicker').value='';$('imagePicker').click();}
 async function onPicked(e){
@@ -540,25 +564,27 @@ async function onPicked(e){
    let buf=await file.arrayBuffer(),res=decodeGif(buf,25);
    if(res.frames.length>1){
     working=false;
-    callback({type:'gif',frames:res.frames.map(src=>({id:uid(),src,deleted:false})),truncated:res.truncated});
+    callback({type:'gif',frames:res.frames.map(src=>({id:uid(),src,deleted:false})),truncated:res.truncated,fit:res.small?'actual':db.defaults.fit});
     return;
    }
-   if(res.frames.length===1){working=false;callback(imageSpec(res.frames[0]));return;}
+   if(res.frames.length===1){working=false;callback(imageSpec(res.frames[0],res.small?'actual':db.defaults.fit));return;}
   }
   let data=await new Promise((ok,no)=>{let r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(file);}),img=await loadImage(data),scale=Math.min(1,1600/Math.max(img.width,img.height)),c=document.createElement('canvas');
   c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));
   c.getContext('2d').drawImage(img,0,0,c.width,c.height);
   let src=c.toDataURL('image/png');if(src.length>12_000_000)throw Error('Source copy too large');
-  working=false;callback(imageSpec(src));
+  let small=img.width<16||img.height<16;
+  working=false;callback(imageSpec(src,small?'actual':db.defaults.fit));
  }catch(error){notify('Import failed: '+error.message);}finally{working=false;e.target.value='';}
 }
 
 function chooseType(callback){openSheet('Add image or pattern');let b=$('sheetBody');b.append(hint('Choose a gallery image or create a color pattern.'));buttons(b,[['Choose image',()=>pickImage(callback),'primary'],['Create pattern',()=>callback(patternSpec())]]);}
-function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');b.append(hint('Add one image across the wall, repeat it on every display, or place it on one display.'));const choose=target=>{if(s.type==='gif'){openGifEditor({groupId:null,target,insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let f=blankFrame();if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary'],['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
-function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;let src=f.mode!=='panels'?f.source:f.panels[index];if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){let g=current.gifGroups[src.gifGroupId];openGifEditor({groupId:g.id,target:g.target,insertIndex:current.steps.indexOf(f),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,truncated:false});return;}if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{if(s.type==='gif'){openGifEditor({groupId:null,target:index,insertIndex:current.steps.indexOf(f),isNew:false,frames:s.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:s.truncated});return;}let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
+function addStep(){if(busy||working)return;if(current.steps.length>=200)return notify('Maximum 200 steps.');chooseType(s=>{openSheet('Choose placement');let b=$('sheetBody');let layerSel=null;if(s.type!=='gif'){layerSel=select([['fg','Foreground (main layer)'],['bg','Background layer']],'fg');b.append(field('Layer',layerSel));}b.append(hint('Add one image across the wall, repeat it on every display, or place it on one display.'));const choose=target=>{if(s.type==='gif'){openGifEditor({groupId:null,target,insertIndex:current.steps.length,isNew:true,frames:s.frames,fit:s.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:s.truncated});return;}let f=blankFrame(),isBg=layerSel&&layerSel.value==='bg';if(isBg){if(typeof target==='string'){f.bgMode=target;f.bgSource=clone(s);}else{f.bgMode='panels';f.bgPanels[target]=clone(s);}if(s.type==='pattern')advancedPattern(f,target,true,s,{applyAll:false,isNewStep:true});else openBackgroundEditor(f,false,true);return;}if(typeof target==='string'){f.mode=target;f.source=clone(s);}else f.panels[target]=clone(s);editSource(f,target,true);};buttons(b,[['Span all four',()=>choose('span'),'primary'],['Repeat on all four',()=>choose('repeat')]]);let positions=el('div',undefined,'placement');for(let i=0;i<4;i++)positions.append(button('Display '+(i+1),()=>choose(i)));b.append(positions);});}
+function openSource(id,index){if(busy||working)return;let f=current.steps.find(x=>x.id===id);if(!f)return;let src=f.mode!=='panels'?f.source:f.panels[index];if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){let g=current.gifGroups[src.gifGroupId];openGifEditor({groupId:g.id,target:g.target,insertIndex:current.steps.indexOf(f),isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,alignX:g.alignX??0.5,alignY:g.alignY??0.5,truncated:false});return;}if(f.mode!=='panels')editSource(clone(f),f.mode,false);else if(f.panels[index])editSource(clone(f),index,false);else chooseType(s=>{if(s.type==='gif'){openGifEditor({groupId:null,target:index,insertIndex:current.steps.indexOf(f),isNew:false,frames:s.frames,fit:s.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:s.truncated});return;}let copy=clone(f);copy.panels[index]=s;editSource(copy,index,false);});}
 
 function openGifEditor(opts){
  let groupId=opts.groupId,target=opts.target,insertIndex=opts.insertIndex,frames=clone(opts.frames),fit=opts.fit||db.defaults.fit,smooth=!!opts.smooth;
+ let alignState={alignX:Number.isFinite(opts.alignX)?opts.alignX:0.5,alignY:Number.isFinite(opts.alignY)?opts.alignY:0.5};
  openSheet(groupId?'Edit GIF animation':'Preview GIF frames');
  let session={gif:true,playing:true,animIdx:0,timer:null,rev:0};editorSession=session;
  const b=$('sheetBody');
@@ -583,19 +609,21 @@ function openGifEditor(opts){
  previewBox.append(previewWrap,previewControls);
  b.append(previewBox);
 
- let fitSel=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],fit);
+ let fitSel=select(FIT_OPTS,fit);
  fitSel.onchange=()=>{fit=fitSel.value;renderAll();};
  let smoothChk=document.createElement('input');smoothChk.type='checkbox';smoothChk.checked=smooth;
  smoothChk.onchange=()=>{smooth=smoothChk.checked;renderAll();};
  let checkLbl=el('label',undefined,'check');checkLbl.append(smoothChk,document.createTextNode('Smooth resizing'));
- b.append(field('Image fitting',fitSel),checkLbl);
+ b.append(field('Image fitting',fitSel));
+ imageAlignControls(b,alignState,renderAll);
+ b.append(checkLbl);
 
  let grid=el('div',undefined,'gifFramesGrid');
  b.append(grid);
 
  let renderedFrames=[];
  async function buildPreviewStep(src){
-  let f=blankFrame(),spec={type:'image',src,fit,smooth};
+  let f=blankFrame(),spec={type:'image',src,fit,smooth,alignX:alignState.alignX,alignY:alignState.alignY};
   if(target==='span'||target==='repeat'){f.mode=target;f.source=spec;}
   else{f.mode='panels';f.panels[target]=spec;}
   await regenerate(f);
@@ -674,8 +702,8 @@ function openGifEditor(opts){
   if(!groupId&&!act.length)return notify('Keep at least one frame to apply.');
   clearTimeout(session.timer);working=true;
   try{
-   await applyGifGroup({groupId,target,insertIndex,frames,fit,smooth});
-   db.defaults={fit,smooth};
+   await applyGifGroup({groupId,target,insertIndex,frames,fit,smooth,alignX:alignState.alignX,alignY:alignState.alignY});
+   if(fit!=='actual')db.defaults={fit,smooth};
    working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);
   }catch(e){notify(e.message);}finally{working=false;}
  },'primary']]);
@@ -697,7 +725,7 @@ function openGifEditor(opts){
  renderAll().then(()=>{if(editorSession===session&&session.playing)scheduleTick();});
 }
 
-async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
+async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth,alignX=0.5,alignY=0.5}){
  if(!current.gifGroups)current.gifGroups={};
  let gid=groupId||uid();
  let active=frames.filter(fr=>!fr.deleted);
@@ -723,7 +751,7 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
 
  for(let k=0;k<active.length;k++){
   let step=current.steps[slots[k]];
-  let srcObj={type:'image',src:active[k].src,fit,smooth,gifGroupId:gid,gifFrameId:active[k].id};
+  let srcObj={type:'image',src:active[k].src,fit,smooth,alignX,alignY,gifGroupId:gid,gifFrameId:active[k].id};
   if(target==='span'||target==='repeat'){
    step.mode=target;step.source=srcObj;step.panels=[null,null,null,null];
   }else{
@@ -752,7 +780,7 @@ async function applyGifGroup({groupId,target,insertIndex,frames,fit,smooth}){
  await refreshCyclingSteps();
 
  if(active.length){
-  current.gifGroups[gid]={id:gid,target,fit,smooth,frames:clone(frames)};
+  current.gifGroups[gid]={id:gid,target,fit,smooth,alignX,alignY,frames:clone(frames)};
   selected=Math.min(startIdx,Math.max(0,current.steps.length-1));
  }else{
   delete current.gifGroups[gid];
@@ -765,7 +793,7 @@ function editSource(frame,target,isNew){
  if(src&&src.type==='pattern'){advancedPattern(frame,target,isNew,src);return;}
  if(src&&src.gifGroupId&&current.gifGroups&&current.gifGroups[src.gifGroupId]){
   let g=current.gifGroups[src.gifGroupId],idx=current.steps.findIndex(x=>x.id===frame.id);
-  openGifEditor({groupId:g.id,target:g.target,insertIndex:idx>=0?idx:0,isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,truncated:false});
+  openGifEditor({groupId:g.id,target:g.target,insertIndex:idx>=0?idx:0,isNew:false,frames:clone(g.frames),fit:g.fit,smooth:g.smooth,alignX:g.alignX??0.5,alignY:g.alignY??0.5,truncated:false});
   return;
  }
  openSheet(isNew?'New step':'Edit image / pattern');let session={frame,target,isNew,revision:0};editorSession=session;const b=$('sheetBody');
@@ -780,19 +808,33 @@ function editSource(frame,target,isNew){
   if(next.type==='gif'){
    let dest=['span','repeat'].includes(placement.value)?placement.value:Number(placement.value);
    let idx=current.steps.findIndex(x=>x.id===frame.id);
-   openGifEditor({groupId:null,target:dest,insertIndex:idx>=0?idx:current.steps.length,isNew,frames:next.frames,fit:db.defaults.fit,smooth:db.defaults.smooth,truncated:next.truncated});
+   openGifEditor({groupId:null,target:dest,insertIndex:idx>=0?idx:current.steps.length,isNew,frames:next.frames,fit:next.fit||db.defaults.fit,smooth:db.defaults.smooth,alignX:0.5,alignY:0.5,truncated:next.truncated});
    return;
   }
   s=next;resetPlacement();rebuildSettings();refresh();
  }
  function rebuildSettings(){settings.replaceChildren();if(s.type==='image'){
   let img=el('img',undefined,'sourcePreview');img.src=s.src;img.alt='Source image';settings.append(img);buttons(settings,[['Change image',()=>pickImage(onChosenImage)],['Use pattern',()=>{s=patternSpec();resetPlacement();rebuildSettings();refresh();}]]);
-  let fit=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],s.fit);fit.onchange=()=>{s.fit=fit.value;refresh();};let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=s.smooth;smooth.onchange=()=>{s.smooth=smooth.checked;refresh();};let check=el('label',undefined,'check');check.append(smooth,document.createTextNode('Smooth resizing'));settings.append(field('Image fitting',fit),check);
+  let fit=select(FIT_OPTS,s.fit);fit.onchange=()=>{s.fit=fit.value;refresh();};let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=s.smooth;smooth.onchange=()=>{s.smooth=smooth.checked;refresh();};let check=el('label',undefined,'check');check.append(smooth,document.createTextNode('Smooth resizing'));settings.append(field('Image fitting',fit));imageAlignControls(settings,s,refresh);settings.append(check);
  }else{
   let type=select([['solid','Solid color'],['gradient','Gradient'],['checker','Checkerboard'],['stripes','Stripes'],['border','Border']],s.pattern);type.onchange=()=>{s.pattern=type.value;rebuildSettings();refresh();};settings.append(field('Pattern',type));
   let colors=el('div',undefined,'colorRow');for(let key of ['a','b']){if(key==='b'&&s.pattern==='solid')continue;let isTrans=s[key]==='transparent';let input=document.createElement('input');input.type='color';input.value=isTrans?'#000000':s[key];if(isTrans)input.classList.add('isTransparent');input.oninput=()=>{s[key]=input.value;if(Array.isArray(s.colors))s.colors[key==='a'?0:1]=input.value;refresh();};let tBtn=button('∅',()=>{s[key]=s[key]==='transparent'?'#ffffff':'transparent';if(Array.isArray(s.colors))s.colors[key==='a'?0:1]=s[key];rebuildSettings();refresh();},'colorTransBtn'+(isTrans?' active':''));tBtn.title='Toggle transparent';let label=el('label',key==='a'?'Color 1':'Color 2');label.append(input,tBtn);colors.append(label);}settings.append(colors);buttons(settings,[['Swap colors',()=>{[s.a,s.b]=[s.b,s.a];if(Array.isArray(s.colors)&&s.colors.length>=2)[s.colors[0],s.colors[1]]=[s.colors[1],s.colors[0]];rebuildSettings();refresh();}],['Use image',()=>pickImage(onChosenImage)]]);
-  if(['gradient','stripes'].includes(s.pattern)){let direction=select([['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Top-left to bottom-right'],['antidiagonal','Top-right to bottom-left']],s.direction);direction.onchange=()=>{s.direction=direction.value;refresh();};settings.append(field('Direction',direction));}
-  if(['checker','stripes','border'].includes(s.pattern)){let key=s.pattern==='border'?'thickness':'size',n=document.createElement('input');n.id='patternSize';n.type='number';n.min=1;n.max=key==='thickness'?8:16;n.value=s[key];n.oninput=()=>{s[key]=Math.max(1,Math.min(Number(n.max),Math.round(Number(n.value)||1)));refresh();};settings.append(field(s.pattern==='checker'?'Square size (pixels)':s.pattern==='stripes'?'Stripe width (pixels)':'Border thickness (pixels)',n));}
+  if(['gradient','stripes'].includes(s.pattern)){
+   const dirs=[['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Top-left to bottom-right'],['antidiagonal','Top-right to bottom-left']];
+   let lbl=el('label',undefined,'calRow'),top=el('span','Direction'),val=el('b',(dirs.find(d=>d[0]===s.direction)||dirs[0])[1]);
+   top.append(val);
+   let r=document.createElement('input');r.type='range';r.min=0;r.max=dirs.length-1;r.step=1;r.value=Math.max(0,dirs.findIndex(d=>d[0]===s.direction));
+   r.oninput=()=>{let d=dirs[Number(r.value)]||dirs[0];s.direction=d[0];val.textContent=d[1];refresh();};
+   lbl.append(top,r);settings.append(lbl);
+  }
+  if(['checker','stripes','border'].includes(s.pattern)){
+   let key=s.pattern==='border'?'thickness':'size',max=key==='thickness'?8:16;
+   let lbl=el('label',undefined,'calRow'),top=el('span',s.pattern==='checker'?'Square size':s.pattern==='stripes'?'Stripe width':'Border thickness'),val=el('b',s[key]+' px');
+   top.append(val);
+   let n=document.createElement('input');n.id='patternSize';n.type='range';n.min=1;n.max=max;n.step=1;n.value=s[key];
+   n.oninput=()=>{s[key]=Number(n.value);val.textContent=s[key]+' px';refresh();};
+   lbl.append(top,n);settings.append(lbl);
+  }
   let cyc=document.createElement('input');cyc.type='checkbox';cyc.checked=!!s.cycle;cyc.onchange=()=>{s.cycle=cyc.checked;refresh();};let cycLbl=el('label',undefined,'check');cycLbl.append(cyc,document.createTextNode('Rotate colors across steps'));settings.append(cycLbl);
  }}
  function resetPlacement(){let old=placement.value;let n=select([['span','Span across all four'],['repeat','Repeat on all four'],['0','Display 1'],['1','Display 2'],['2','Display 3'],['3','Display 4']],old);let chosen=n.value;placement.replaceChildren(...Array.from(n.children));placement.value=chosen;}
@@ -820,7 +862,20 @@ function advancedPattern(frame,target,isNew,source,bgOpts=null){
   return f;
  }
  async function refresh(){let rev=++revision;try{let f=candidate(),stepIdx=isNew?current.steps.length:Math.max(0,current.steps.findIndex(x=>x.id===f.id));await regenerate(f,db.layout,stepIdx);if(rev!==revision||editorSession!==advancedSession)return;let w=makeWall(f,db.layout,false);view.style.gridTemplateColumns=w.style.gridTemplateColumns;view.replaceChildren(...Array.from(w.children));queueTiles(f.tiles);}catch(e){notify(e.message);}}
- function number(label,key,min,max){let n=document.createElement('input');n.type='number';n.min=min;n.max=max;n.value=s[key];n.oninput=()=>{s[key]=Math.max(min,Math.min(max,Math.round(Number(n.value)||min)));refresh();};controls.append(field(label,n));}
+ function number(label,key,min,max){
+  let lbl=el('label',undefined,'calRow'),top=el('span',label),val=el('b',s[key]+' px');
+  top.append(val);
+  let n=document.createElement('input');n.type='range';n.min=min;n.max=max;n.step=1;n.value=s[key];
+  n.oninput=()=>{s[key]=Math.max(min,Math.min(max,Math.round(Number(n.value)||min)));val.textContent=s[key]+' px';refresh();};
+  lbl.append(top,n);controls.append(lbl);
+ }
+ function choiceSlider(label,options,key){
+  let lbl=el('label',undefined,'calRow'),top=el('span',label),idx=Math.max(0,options.findIndex(o=>String(o[0])===String(s[key])));
+  let val=el('b',options[idx][1]);top.append(val);
+  let r=document.createElement('input');r.type='range';r.min=0;r.max=options.length-1;r.step=1;r.value=idx;
+  r.oninput=()=>{let chosen=options[Number(r.value)]||options[0];s[key]=chosen[0];val.textContent=chosen[1];refresh();};
+  lbl.append(top,r);controls.append(lbl);
+ }
  function check(label,key,onExtra){let n=document.createElement('input');n.type='checkbox';n.checked=!!s[key];n.onchange=()=>{s[key]=n.checked;if(key==='outline'||onExtra)rebuild();refresh();};controls.append(field(label,n));}
  function swapColors(from,to){if(from<0||from>=s.colors.length||to<0||to>=s.colors.length||from===to)return;let [m]=s.colors.splice(from,1);s.colors.splice(to,0,m);s.a=s.colors[0];s.b=s.colors[1]||s.a;rebuild();refresh();}
  let colorDrag=null;
@@ -894,21 +949,22 @@ function advancedPattern(frame,target,isNew,source,bgOpts=null){
    let bg=document.createElement('input');bg.type='color';bg.value=bgTrans?'#000000':s.background;if(bgTrans)bg.classList.add('isTransparent');bg.oninput=()=>{s.background=bg.value;refresh();};
    let bgTBtn=button(bgTrans?'Transparent (∅)':'Make transparent (∅)',()=>{s.background=s.background==='transparent'?'#000000':'transparent';rebuild();refresh();},'colorTransBtn'+(bgTrans?' active':''));
    bgRow.append(bg,bgTBtn);controls.append(field('Shape background',bgRow));
-   let rot=select([[0,'Up / 0°'],[90,'Right / 90°'],[180,'Down / 180°'],[270,'Left / 270°']],s.rotation);rot.onchange=()=>{s.rotation=Number(rot.value);refresh();};controls.append(field('Direction / rotation',rot));check('Repeat shapes in a grid','tiled');check('Outline instead of filled','outline');number('Spacing (pixels)','spacing',0,32);
+   choiceSlider('Direction / rotation',[[0,'Up / 0°'],[90,'Right / 90°'],[180,'Down / 180°'],[270,'Left / 270°']],'rotation');
+   check('Repeat shapes in a grid','tiled');check('Outline instead of filled','outline');number('Spacing','spacing',0,32);
   }
-  if(['gradient','stripes'].includes(s.pattern)){let d=select([['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Diagonal'],['antidiagonal','Opposite diagonal']],s.direction);d.onchange=()=>{s.direction=d.value;refresh();};controls.append(field('Direction',d));}
-  if(!['solid','gradient'].includes(s.pattern))number(shaped?'Shape size (pixels)':'Pattern width (pixels)','size',1,64);
+  if(['gradient','stripes','zigzag'].includes(s.pattern))choiceSlider('Direction',[['horizontal','Horizontal'],['vertical','Vertical'],['diagonal','Diagonal'],['antidiagonal','Opposite diagonal']],'direction');
+  if(!['solid','gradient'].includes(s.pattern))number(shaped?'Shape size':'Pattern width','size',1,64);
   if(s.outline||s.pattern==='border')number('Outline / border thickness','thickness',1,8);
   check('Rotate colors across steps','cycle',true);
   if(s.cycle&&s.colors.length>1)buttons(controls,[['Generate full cycle ('+s.colors.length+' steps)',generateFullCycle]]);
  }
  type.onchange=()=>{s.pattern=type.value;if(!s.size)s.size=4;rebuild();refresh();};placement.onchange=refresh;rebuild();
- buttons(b,[['Cancel',()=>{revision++;closeSheet(true);if(live)previewCurrent(true);}],['Done',async()=>{if(busy||working)return;working=true;try{let f=candidate();if(!bgOpts&&!isNew&&f.mode!=='panels'&&frame.mode==='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace other panel images with this wall source?'))return;if(bgOpts){let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');await regenerate(f,db.layout,i);current.steps[i]=f;selected=i;if(bgOpts.applyAll){for(let k=0;k<current.steps.length;k++){current.steps[k].bgMode=f.bgMode;current.steps[k].bgSource=clone(f.bgSource);current.steps[k].bgPanels=clone(f.bgPanels);await regenerate(current.steps[k],db.layout,k);}}}else if(isNew){if(current.steps.length>=200)throw Error('Maximum 200 steps');await regenerate(f,db.layout,current.steps.length);current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');await regenerate(f,db.layout,i);current.steps[i]=f;selected=i;}revision++;working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
+ buttons(b,[['Cancel',()=>{revision++;closeSheet(true);if(live)previewCurrent(true);}],['Done',async()=>{if(busy||working)return;working=true;try{let f=candidate();if(!bgOpts&&!isNew&&f.mode!=='panels'&&frame.mode==='panels'&&frame.panels.some((p,i)=>i!==target&&p)&&!confirm('Replace other panel images with this wall source?'))return;if(bgOpts){if(bgOpts.isNewStep){if(current.steps.length>=200)throw Error('Maximum 200 steps');await regenerate(f,db.layout,current.steps.length);current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');await regenerate(f,db.layout,i);current.steps[i]=f;selected=i;}if(bgOpts.applyAll){for(let k=0;k<current.steps.length;k++){current.steps[k].bgMode=f.bgMode;current.steps[k].bgSource=clone(f.bgSource);current.steps[k].bgPanels=clone(f.bgPanels);await regenerate(current.steps[k],db.layout,k);}}}else if(isNew){if(current.steps.length>=200)throw Error('Maximum 200 steps');await regenerate(f,db.layout,current.steps.length);current.steps.push(f);selected=current.steps.length-1;}else{let i=current.steps.findIndex(x=>x.id===f.id);if(i<0)throw Error('Step missing');await regenerate(f,db.layout,i);current.steps[i]=f;selected=i;}revision++;working=false;closeSheet(false);changed();renderEditor();previewCurrent(true);}catch(e){notify(e.message);}finally{working=false;}},'primary']]);
  if(!isNew&&!bgOpts){b.append(el('div',undefined,'separator'));buttons(b,[['Remove pattern',()=>{if(!confirm('Remove this pattern?'))return;let i=current.steps.findIndex(f=>f.id===frame.id);if(i<0)return;if(typeof target==='string'){let prevBg={bgMode:current.steps[i].bgMode,bgSource:current.steps[i].bgSource,bgPanels:current.steps[i].bgPanels};current.steps[i]={...blankFrame(),id:frame.id,...prevBg};}else{current.steps[i].panels[target]=null;current.steps[i].tiles[target]='';}closeSheet(false);changed();renderEditor();previewCurrent(true);},'danger'],['Delete entire step',()=>deleteStep(frame.id),'danger']]);buttons(b,[['Move earlier',()=>{closeSheet();moveStep(frame.id,-1);}],['Move later',()=>{closeSheet();moveStep(frame.id,1);}]]);}
  refresh();
 }
 
-function openBackgroundEditor(frame,applyAllDefault=false){
+function openBackgroundEditor(frame,applyAllDefault=false,isNewStep=false){
  openSheet('Background layer');
  let b=$('sheetBody'),f=clone(frame);
  if(!f.bgMode)f.bgMode='none';
@@ -946,10 +1002,12 @@ function openBackgroundEditor(frame,applyAllDefault=false){
    }else{
     let img=el('img',undefined,'sourcePreview');img.src=activeBgSrc.src;img.alt='Background';controls.append(img);
     buttons(controls,[['Change image',()=>pickImage(next=>{if(next.type==='gif')return notify('Use a still image or pattern for background.');activeBgSrc=next;rebuild();refresh();})]]);
-    let fit=select([['contain','Fit with black borders'],['cover','Fill and crop'],['stretch','Stretch']],activeBgSrc.fit);fit.onchange=()=>{activeBgSrc.fit=fit.value;refresh();};
+    let fit=select(FIT_OPTS,activeBgSrc.fit);fit.onchange=()=>{activeBgSrc.fit=fit.value;refresh();};
     let smooth=document.createElement('input');smooth.type='checkbox';smooth.checked=activeBgSrc.smooth;smooth.onchange=()=>{activeBgSrc.smooth=smooth.checked;refresh();};
     let chk=el('label',undefined,'check');chk.append(smooth,document.createTextNode('Smooth resizing'));
-    controls.append(field('Image fitting',fit),chk);
+    controls.append(field('Image fitting',fit));
+    imageAlignControls(controls,activeBgSrc,refresh);
+    controls.append(chk);
    }
   }else{
    if(!activeBgSrc||activeBgSrc.type!=='pattern')activeBgSrc=patternSpec();
@@ -972,6 +1030,10 @@ function openBackgroundEditor(frame,applyAllDefault=false){
      current.steps[k].bgMode=cand.bgMode;current.steps[k].bgSource=clone(cand.bgSource);current.steps[k].bgPanels=clone(cand.bgPanels);
      await regenerate(current.steps[k],db.layout,k);
     }
+   }else if(isNewStep){
+    if(current.steps.length>=200)throw Error('Maximum 200 steps');
+    await regenerate(cand,db.layout,current.steps.length);
+    current.steps.push(cand);selected=current.steps.length-1;
    }else{
     let i=current.steps.findIndex(x=>x.id===cand.id);
     if(i<0)throw Error('Step missing');
