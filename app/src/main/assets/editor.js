@@ -194,7 +194,7 @@ function addStep() {
  if (current.steps.length >= 200) return notify('Maximum 200 steps.');
  chooseType(s => {
   openSheet('Choose placement');
-  let b = $('sheetBody'), layerSel = select([['fg', 'Foreground (main layer)'], ['bg', 'Background layer']], 'fg');
+  let b = $('sheetBody'), layerSel = select([['fg', 'Foreground (top layer)'], ['bg', 'Background (bottom layer)']], 'fg');
   b.append(field('Layer', layerSel), hint('Add one image across the wall, repeat it on every display, or place it on one display.'));
   const choose = target => {
    let isBg = layerSel.value === 'bg';
@@ -203,15 +203,12 @@ function addStep() {
     return;
    }
    let f = blankFrame();
-   if (isBg) {
-    if (typeof target === 'string') { f.bgMode = target; f.bgSource = clone(s); }
-    else { f.bgMode = 'panels'; f.bgPanels[target] = clone(s); }
-    if (s.type === 'pattern') advancedPattern(f, target, true, s, { applyAll: false, isNewStep: true });
-    else openBackgroundEditor(f, false, true);
-    return;
-   }
-   if (typeof target === 'string') { f.mode = target; f.source = clone(s); } else f.panels[target] = clone(s);
-   editSource(f, target, true);
+   let L = ensureStepLayers(f)[0];
+   if (typeof target === 'string') { L.mode = target; L.source = clone(s); L.panels = [null, null, null, null]; }
+   else { L.mode = 'panels'; L.source = null; L.panels[target] = clone(s); }
+   if (isBg) { L.name = 'Background'; f.layers.push(blankLayer('panels', null, [null, null, null, null], 'Foreground')); }
+   syncLegacyFields(f);
+   openStepStudio(f, { isNew: true, layerIdx: 0, panelIdx: typeof target === 'number' ? target : 0 });
   };
   buttons(b, [['Span all four', () => choose('span'), 'primary'], ['Repeat on all four', () => choose('repeat')]]);
   let positions = el('div', undefined, 'placement');
@@ -223,403 +220,370 @@ function addStep() {
 function openSource(id, index) {
  if (busy || working) return;
  let f = current.steps.find(x => x.id === id); if (!f) return;
- let src = f.mode !== 'panels' ? f.source : f.panels[index];
+ let layers = ensureStepLayers(f), topIdx = layers.length - 1, top = layers[topIdx];
+ let src = top.mode !== 'panels' ? top.source : top.panels[index];
  if (src && src.gifGroupId && current.gifGroups && current.gifGroups[src.gifGroupId]) {
   let g = current.gifGroups[src.gifGroupId];
   openGifEditor({ groupId: g.id, target: g.target, layer: g.layer || 'fg', insertIndex: current.steps.indexOf(f), isNew: false, frames: clone(g.frames), fit: g.fit, smooth: g.smooth, alignX: g.alignX ?? 0.5, alignY: g.alignY ?? 0.5, zoom: g.zoom ?? 1, truncated: false });
   return;
  }
- if (f.mode !== 'panels') editSource(clone(f), f.mode, false);
- else if (f.panels[index]) editSource(clone(f), index, false);
- else chooseType(s => {
-  if (s.type === 'gif') {
-   openGifEditor({ groupId: null, target: index, layer: 'fg', insertIndex: current.steps.indexOf(f), isNew: false, frames: s.frames, fit: s.fit || db.defaults.fit, smooth: db.defaults.smooth, alignX: 0.5, alignY: 0.5, zoom: 1, truncated: s.truncated });
-   return;
-  }
-  let copy = clone(f); copy.panels[index] = s; editSource(copy, index, false);
- });
+ openStepStudio(clone(f), { isNew: false, layerIdx: topIdx, panelIdx: index });
 }
 
 function editSource(frame, target, isNew) {
- let src = typeof target === 'string' ? frame.source : frame.panels[target];
- if (src && src.type === 'pattern') { advancedPattern(frame, target, isNew, src); return; }
- if (src && src.gifGroupId && current.gifGroups && current.gifGroups[src.gifGroupId]) {
-  let g = current.gifGroups[src.gifGroupId], idx = current.steps.findIndex(x => x.id === frame.id);
-  openGifEditor({ groupId: g.id, target: g.target, insertIndex: idx >= 0 ? idx : 0, isNew: false, frames: clone(g.frames), fit: g.fit, smooth: g.smooth, alignX: g.alignX ?? 0.5, alignY: g.alignY ?? 0.5, zoom: g.zoom ?? 1, truncated: false });
-  return;
- }
- openSheet(isNew ? 'New step' : 'Edit image / pattern');
- let session = { frame, target, isNew, revision: 0 }; editorSession = session;
- const b = $('sheetBody');
- let tools = el('div', undefined, 'advancedPattern');
- tools.append(button('Use shapes / advanced patterns', () => advancedPattern(frame, target, isNew, patternSpec())));
- if (!isNew) tools.append(' ', button('Background layer', () => openBackgroundEditor(clone(frame))));
- b.append(tools);
- let s = clone(src); const settings = el('div'); b.append(settings);
- let placement = select([['span', 'Span across all four'], ['repeat', 'Repeat on all four'], ['0', 'Display 1'], ['1', 'Display 2'], ['2', 'Display 3'], ['3', 'Display 4']], target);
- let view = el('div', undefined, 'wall miniPreview');
- b.append(field('Placement', placement), hint('Span makes one continuous wall. Repeat duplicates it on every panel. Moving a wall source to one panel clears the other panels.'), view);
+ let f = clone(frame), layers = ensureStepLayers(f), topIdx = layers.length - 1;
+ openStepStudio(f, { isNew, layerIdx: topIdx, panelIdx: typeof target === 'number' ? target : 0 });
+}
 
- function candidate() {
-  let f = clone(frame), dest = ['span', 'repeat'].includes(placement.value) ? placement.value : Number(placement.value);
-  if (typeof dest === 'string') { f.mode = dest; f.source = clone(s); f.panels = [null, null, null, null]; }
-  else { if (typeof target === 'string') f.panels = [null, null, null, null]; else if (dest !== target) f.panels[target] = null; f.mode = 'panels'; f.source = null; f.panels[dest] = clone(s); }
-  return f;
+function openBackgroundEditor(frame) {
+ let f = clone(frame), layers = ensureStepLayers(f);
+ if (layers.length < 2) layers.unshift(blankLayer('panels', null, [null, null, null, null], 'Background'));
+ openStepStudio(f, { isNew: false, layerIdx: 0, panelIdx: 0 });
+}
+
+const STUDIO_PATTERNS = [['solid', 'Solid'], ['gradient', 'Gradient'], ['checker', 'Checkerboard'], ['stripes', 'Stripes'], ['border', 'Border'], ['diamonds', 'Diamond bands'], ['zigzag', 'Zigzag stripes'], ['dots', 'Dots'], ['heart', 'Hearts'], ['star', 'Stars'], ['circle', 'Circles'], ['square', 'Squares'], ['diamond', 'Diamonds'], ['triangle', 'Triangles'], ['arrow', 'Arrows']];
+
+function openStepStudio(frame, opts = {}) {
+ let isNew = !!opts.isNew;
+ let f = clone(frame), layers = ensureStepLayers(f);
+ let activeLayerIdx = Math.max(0, Math.min(layers.length - 1, opts.layerIdx ?? (layers.length - 1)));
+ let activePanelIdx = Math.max(0, Math.min(3, opts.panelIdx ?? 0));
+ let activeCat = 'source';
+
+ openSheet(isNew ? 'New step studio' : 'Step ' + (current.steps.findIndex(x => x.id === f.id) + 1) + ' studio');
+ let session = { studio: true, rev: 0 }; editorSession = session;
+ const b = $('sheetBody');
+
+ let sticky = el('div', undefined, 'studioSticky');
+ let view = el('div', undefined, 'wall studioPreview');
+ sticky.append(view);
+ b.append(sticky);
+
+ let layerHead = el('div', undefined, 'layerHeadRow');
+ let layerTitle = el('strong', '');
+ let addLayerBtn = button('+ Add layer', () => {
+  if (layers.length >= 8) return notify('Maximum 8 layers per step.');
+  layers.push(blankLayer('panels', null, [null, null, null, null], 'Layer ' + (layers.length + 1)));
+  activeLayerIdx = layers.length - 1;
+  activeCat = 'source';
+  rebuildAll(); refresh();
+ }, 'layerMiniBtn');
+ layerHead.append(layerTitle, addLayerBtn);
+ let layerStack = el('div', undefined, 'layerStack');
+ let catBar = el('div', undefined, 'catBar');
+ let tray = el('div', undefined, 'toolTray');
+ b.append(layerHead, layerStack, catBar, tray);
+
+ function currentLayer() { return layers[activeLayerIdx] || layers[0]; }
+ function currentSrc() {
+  let L = currentLayer();
+  return L.mode === 'panels' ? L.panels[activePanelIdx] : L.source;
  }
+ function setSrc(next) {
+  let L = currentLayer();
+  if (L.mode === 'panels') L.panels[activePanelIdx] = next;
+  else L.source = next;
+ }
+
+ function ensureValidCat() {
+  let s = currentSrc();
+  if (activeCat === 'fit' && (!s || s.type !== 'image')) activeCat = 'source';
+  if ((activeCat === 'colors' || activeCat === 'style') && (!s || s.type !== 'pattern')) activeCat = 'source';
+ }
+
  async function refresh() {
-  let revision = ++session.revision;
+  let rev = ++session.rev;
   try {
-   let f = candidate(), stepIdx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
+   syncLegacyFields(f);
+   let stepIdx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
    await regenerate(f, db.layout, stepIdx);
-   if (editorSession !== session || revision !== session.revision) return;
-   session.rendered = f;
+   if (editorSession !== session || rev !== session.rev) return;
    let w = makeWall(f, db.layout, false);
-   view.style.gridTemplateColumns = w.style.gridTemplateColumns; view.replaceChildren(...Array.from(w.children));
-   let mask = (!isNew && frame.mode === 'panels' && f.mode === 'panels' && String(target) === placement.value) ? [Number(target)] : [0, 1, 2, 3];
-   queueTiles(f.tiles, mask);
+   view.style.gridTemplateColumns = w.style.gridTemplateColumns;
+   view.replaceChildren(...Array.from(w.children));
+   queueTiles(f.tiles, [0, 1, 2, 3]);
   } catch (e) { notify(e.message); }
  }
- function onChosenImage(next) {
-  if (next.type === 'gif') {
-   let dest = ['span', 'repeat'].includes(placement.value) ? placement.value : Number(placement.value);
-   let idx = current.steps.findIndex(x => x.id === frame.id);
-   openGifEditor({ groupId: null, target: dest, insertIndex: idx >= 0 ? idx : current.steps.length, isNew, frames: next.frames, fit: next.fit || db.defaults.fit, smooth: db.defaults.smooth, alignX: 0.5, alignY: 0.5, zoom: 1, truncated: next.truncated });
-   return;
-  }
-  s = next; resetPlacement(); rebuildSettings(); refresh();
- }
- function rebuildSettings() {
-  settings.replaceChildren();
-  if (s.type === 'image') {
-   let img = el('img', undefined, 'sourcePreview'); img.src = s.src; img.alt = 'Source image'; settings.append(img);
-   buttons(settings, [['Change image', () => pickImage(onChosenImage)], ['Use pattern', () => { s = patternSpec(); resetPlacement(); rebuildSettings(); refresh(); }]]);
-   buildImageControls(settings, s, refresh);
-  } else {
-   let type = select([['solid', 'Solid color'], ['gradient', 'Gradient'], ['checker', 'Checkerboard'], ['stripes', 'Stripes'], ['border', 'Border']], s.pattern);
-   type.onchange = () => { s.pattern = type.value; rebuildSettings(); refresh(); };
-   settings.append(field('Pattern', type));
-   let colors = el('div', undefined, 'colorRow');
-   for (let key of ['a', 'b']) {
-    if (key === 'b' && s.pattern === 'solid') continue;
-    let isTrans = s[key] === 'transparent', input = document.createElement('input');
-    input.type = 'color'; input.value = isTrans ? '#000000' : s[key]; if (isTrans) input.classList.add('isTransparent');
-    input.oninput = () => { s[key] = input.value; if (Array.isArray(s.colors)) s.colors[key === 'a' ? 0 : 1] = input.value; refresh(); };
-    let tBtn = button('∅', () => { s[key] = s[key] === 'transparent' ? '#ffffff' : 'transparent'; if (Array.isArray(s.colors)) s.colors[key === 'a' ? 0 : 1] = s[key]; rebuildSettings(); refresh(); }, 'colorTransBtn' + (isTrans ? ' active' : ''));
-    tBtn.title = 'Toggle transparent';
-    let label = el('label', key === 'a' ? 'Color 1' : 'Color 2'); label.append(input, tBtn); colors.append(label);
-   }
-   settings.append(colors);
-   buttons(settings, [['Swap colors', () => { [s.a, s.b] = [s.b, s.a]; if (Array.isArray(s.colors) && s.colors.length >= 2) [s.colors[0], s.colors[1]] = [s.colors[1], s.colors[0]]; rebuildSettings(); refresh(); }], ['Use image', () => pickImage(onChosenImage)]]);
-   if (['gradient', 'stripes'].includes(s.pattern)) {
-    const dirs = [['horizontal', 'Horizontal'], ['vertical', 'Vertical'], ['diagonal', 'Top-left to bottom-right'], ['antidiagonal', 'Top-right to bottom-left']];
-    let lbl = el('label', undefined, 'calRow'), top = el('span', 'Direction'), val = el('b', (dirs.find(d => d[0] === s.direction) || dirs[0])[1]);
-    top.append(val);
-    let r = document.createElement('input'); r.type = 'range'; r.min = 0; r.max = dirs.length - 1; r.step = 1; r.value = Math.max(0, dirs.findIndex(d => d[0] === s.direction));
-    r.oninput = () => { let d = dirs[Number(r.value)] || dirs[0]; s.direction = d[0]; val.textContent = d[1]; refresh(); };
-    lbl.append(top, r); settings.append(lbl);
-   }
-   if (['checker', 'stripes', 'border'].includes(s.pattern)) {
-    let key = s.pattern === 'border' ? 'thickness' : 'size', max = key === 'thickness' ? 8 : 16;
-    let lbl = el('label', undefined, 'calRow'), top = el('span', s.pattern === 'checker' ? 'Square size' : s.pattern === 'stripes' ? 'Stripe width' : 'Border thickness'), val = el('b', s[key] + ' px');
-    top.append(val);
-    let n = document.createElement('input'); n.id = 'patternSize'; n.type = 'range'; n.min = 1; n.max = max; n.step = 1; n.value = s[key];
-    n.oninput = () => { s[key] = Number(n.value); val.textContent = s[key] + ' px'; refresh(); };
-    lbl.append(top, n); settings.append(lbl);
-   }
-   let cyc = document.createElement('input'); cyc.type = 'checkbox'; cyc.checked = !!s.cycle; cyc.onchange = () => { s.cycle = cyc.checked; refresh(); };
-   let cycLbl = el('label', undefined, 'check'); cycLbl.append(cyc, document.createTextNode('Rotate colors across steps')); settings.append(cycLbl);
+
+ function renderLayers() {
+  layerTitle.textContent = 'Layers (' + layers.length + '/8 · top draws over bottom)';
+  layerStack.replaceChildren();
+  for (let idx = layers.length - 1; idx >= 0; idx--) {
+   let L = layers[idx];
+   let row = el('div', undefined, 'layerRow' + (idx === activeLayerIdx ? ' active' : '') + (L.visible === false ? ' hiddenLayer' : ''));
+   let modeLbl = L.mode === 'span' ? 'Span' : L.mode === 'repeat' ? 'Repeat' : 'Panels';
+   let selBtn = button((L.name || 'Layer ' + (idx + 1)) + ' · ' + modeLbl, () => {
+    activeLayerIdx = idx; ensureValidCat(); rebuildAll();
+   }, 'layerSelectBtn');
+   let visBtn = button(L.visible === false ? '🚫' : '👁️', e => {
+    e.stopPropagation(); L.visible = L.visible === false; renderLayers(); refresh();
+   }, 'layerMiniBtn'); visBtn.title = 'Toggle visibility';
+   let upBtn = button('▲', e => {
+    e.stopPropagation(); if (idx >= layers.length - 1) return;
+    [layers[idx], layers[idx + 1]] = [layers[idx + 1], layers[idx]];
+    if (activeLayerIdx === idx) activeLayerIdx++; else if (activeLayerIdx === idx + 1) activeLayerIdx--;
+    renderLayers(); refresh();
+   }, 'layerMiniBtn'); upBtn.disabled = idx >= layers.length - 1; upBtn.title = 'Move layer up';
+   let dnBtn = button('▼', e => {
+    e.stopPropagation(); if (idx <= 0) return;
+    [layers[idx], layers[idx - 1]] = [layers[idx - 1], layers[idx]];
+    if (activeLayerIdx === idx) activeLayerIdx--; else if (activeLayerIdx === idx - 1) activeLayerIdx++;
+    renderLayers(); refresh();
+   }, 'layerMiniBtn'); dnBtn.disabled = idx <= 0; dnBtn.title = 'Move layer down';
+   let delBtn = button('✕', e => {
+    e.stopPropagation();
+    if (layers.length > 1) {
+     layers.splice(idx, 1);
+     activeLayerIdx = Math.min(activeLayerIdx, layers.length - 1);
+    } else {
+     L.mode = 'panels'; L.source = null; L.panels = [null, null, null, null];
+    }
+    ensureValidCat(); rebuildAll(); refresh();
+   }, 'layerMiniBtn danger'); delBtn.title = layers.length > 1 ? 'Delete layer' : 'Clear layer';
+   row.append(selBtn, visBtn, upBtn, dnBtn, delBtn);
+   layerStack.append(row);
   }
  }
- function resetPlacement() {
-  let old = placement.value, n = select([['span', 'Span across all four'], ['repeat', 'Repeat on all four'], ['0', 'Display 1'], ['1', 'Display 2'], ['2', 'Display 3'], ['3', 'Display 4']], old);
-  let chosen = n.value; placement.replaceChildren(...Array.from(n.children)); placement.value = chosen;
+
+ function renderCategories() {
+  ensureValidCat();
+  let s = currentSrc();
+  let cats = [['source', '🖼️', 'Source'], ['place', '⊞', 'Placement']];
+  if (s && s.type === 'image') cats.push(['fit', '📐', 'Fit & Zoom']);
+  if (s && s.type === 'pattern') cats.push(['colors', '🎨', 'Colors'], ['style', '⚙️', 'Style']);
+  cats.push(['step', '⚡', 'Step']);
+  catBar.replaceChildren();
+  for (let [id, icon, label] of cats) {
+   let btn = el('button', undefined, 'catBtn' + (activeCat === id ? ' active' : ''));
+   btn.type = 'button';
+   btn.append(el('span', icon), el('span', label));
+   btn.onclick = () => { activeCat = id; renderCategories(); renderTray(); };
+   catBar.append(btn);
+  }
  }
- placement.onchange = refresh; rebuildSettings();
- buttons(b, [['Cancel', () => closeSheet(true)], ['Done', async () => {
+
+ function renderTray() {
+  tray.replaceChildren();
+  let L = currentLayer(), s = currentSrc();
+  if (L.mode === 'panels' && ['source', 'fit', 'colors', 'style'].includes(activeCat)) {
+   let pRow = el('div', undefined, 'row');
+   for (let i = 0; i < 4; i++) {
+    let pb = button('D' + (i + 1) + (L.panels[i] ? ' ●' : ''), () => {
+     activePanelIdx = i; ensureValidCat(); renderCategories(); renderTray();
+    }, i === activePanelIdx ? 'primary' : '');
+    pb.style.flex = '1'; pb.style.minHeight = '32px'; pb.style.fontSize = '11px';
+    pRow.append(pb);
+   }
+   tray.append(pRow);
+  }
+
+  const pickLayerImg = () => pickImage(next => {
+   if (next.type === 'gif') {
+    let dest = L.mode === 'panels' ? activePanelIdx : L.mode;
+    let idx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
+    openGifEditor({ groupId: null, target: dest, layer: activeLayerIdx === 0 && layers.length > 1 ? 'bg' : 'fg', insertIndex: idx, isNew, frames: next.frames, fit: next.fit || db.defaults.fit, smooth: db.defaults.smooth, alignX: 0.5, alignY: 0.5, zoom: 1, truncated: next.truncated });
+    return;
+   }
+   setSrc(next); ensureValidCat(); rebuildAll(); refresh();
+  });
+
+  if (activeCat === 'source') {
+   if (!s) {
+    tray.append(hint('This layer slot is empty. Choose an image/GIF or create a pattern/shape.'));
+    buttons(tray, [['Choose image / GIF', pickLayerImg, 'primary'], ['Create pattern / shape', () => { setSrc(patternSpec()); activeCat = 'colors'; rebuildAll(); refresh(); }]]);
+   } else if (s.type === 'image') {
+    if (s.gifGroupId && current.gifGroups && current.gifGroups[s.gifGroupId]) {
+     let g = current.gifGroups[s.gifGroupId];
+     buttons(tray, [['Edit GIF frames', () => openGifEditor({ groupId: g.id, target: g.target, layer: g.layer || 'fg', insertIndex: Math.max(0, current.steps.findIndex(x => x.id === f.id)), isNew: false, frames: clone(g.frames), fit: g.fit, smooth: g.smooth, alignX: g.alignX ?? 0.5, alignY: g.alignY ?? 0.5, zoom: g.zoom ?? 1, truncated: false }), 'primary']]);
+    }
+    let img = el('img', undefined, 'sourcePreview'); img.src = s.src; img.alt = 'Source image'; tray.append(img);
+    buttons(tray, [['Change image', pickLayerImg], ['Switch to pattern', () => { setSrc(patternSpec()); activeCat = 'colors'; rebuildAll(); refresh(); }], ['Clear slot', () => { setSrc(null); rebuildAll(); refresh(); }, 'danger']]);
+   } else {
+    let typeSel = select(STUDIO_PATTERNS, s.pattern);
+    typeSel.onchange = () => { s.pattern = typeSel.value; if (!s.size) s.size = 4; rebuildAll(); refresh(); };
+    tray.append(field('Pattern / shape', typeSel));
+    buttons(tray, [['Switch to image', pickLayerImg], ['Clear slot', () => { setSrc(null); rebuildAll(); refresh(); }, 'danger']]);
+   }
+  } else if (activeCat === 'place') {
+   const setMode = dest => {
+    let src = currentSrc() || patternSpec();
+    if (dest === 'span' || dest === 'repeat') {
+     L.mode = dest; L.source = clone(src); L.panels = [null, null, null, null];
+    } else {
+     L.mode = 'panels'; L.source = null; L.panels[dest] = clone(src); activePanelIdx = dest;
+    }
+    rebuildAll(); refresh();
+   };
+   buttons(tray, [['Span all 4', () => setMode('span'), L.mode === 'span' ? 'primary' : ''], ['Repeat all 4', () => setMode('repeat'), L.mode === 'repeat' ? 'primary' : '']]);
+   let pGrid = el('div', undefined, 'placement');
+   for (let i = 0; i < 4; i++) pGrid.append(button('Display ' + (i + 1), () => setMode(i), L.mode === 'panels' && activePanelIdx === i ? 'primary' : ''));
+   tray.append(pGrid);
+  } else if (activeCat === 'fit' && s && s.type === 'image') {
+   buildImageControls(tray, s, refresh);
+  } else if (activeCat === 'colors' && s && s.type === 'pattern') {
+   renderPatternColors(tray, s, () => { renderTray(); refresh(); }, refresh, async () => {
+    if (busy || working) return;
+    let count = palette(s).length; if (count < 2) return notify('Add at least 2 colors to generate a cycle.');
+    s.cycle = true; working = true;
+    try {
+     pushUndo();
+     let startIdx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
+     if (startIdx + count > 200) throw Error('Exceeds maximum 200 steps');
+     for (let k = 0; k < count; k++) {
+      let step = clone(f); step.id = isNew || k > 0 ? uid() : f.id;
+      let ti = startIdx + k;
+      if (ti >= current.steps.length) current.steps.push(step);
+      else current.steps[ti] = step;
+      await regenerate(current.steps[ti], db.layout, ti);
+     }
+     selected = startIdx; working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
+     notify('Generated ' + count + '-step color cycle.');
+    } catch (e) { notify(e.message); } finally { working = false; }
+   });
+  } else if (activeCat === 'style' && s && s.type === 'pattern') {
+   renderPatternStyle(tray, s, () => { renderTray(); refresh(); }, refresh);
+  } else if (activeCat === 'step') {
+   buttons(tray, [['Apply this layer to all steps', async () => {
+    if (working || busy) return;
+    working = true;
+    try {
+     await commitStep(clone(f), isNew);
+     for (let k = 0; k < current.steps.length; k++) {
+      let st = current.steps[k], stLayers = ensureStepLayers(st);
+      if (activeLayerIdx < stLayers.length) stLayers[activeLayerIdx] = clone(L);
+      else stLayers.push(clone(L));
+      syncLegacyFields(st);
+      await regenerate(st, db.layout, k);
+     }
+     working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
+     notify('Applied layer to all steps.');
+    } catch (e) { notify(e.message); } finally { working = false; }
+   }, 'primary']]);
+   if (!isNew) {
+    buttons(tray, [['Copy / mirror tile', () => copyTileSheet(f.id)], ['Duplicate step', async () => {
+     if (current.steps.length >= 200) return;
+     pushUndo(); let copy = clone(f); copy.id = uid();
+     let i = current.steps.findIndex(x => x.id === f.id);
+     current.steps.splice(i + 1, 0, copy); selected = i + 1;
+     await refreshCyclingSteps(); closeSheet(false); changed(); renderEditor(); previewCurrent(true);
+    }]]);
+    buttons(tray, [['Move step earlier', () => { closeSheet(); moveStep(f.id, -1); }], ['Move step later', () => { closeSheet(); moveStep(f.id, 1); }]]);
+    buttons(tray, [['Delete entire step', () => deleteStep(f.id), 'danger']]);
+   }
+  }
+ }
+
+ function rebuildAll() { renderLayers(); renderCategories(); renderTray(); }
+ rebuildAll();
+
+ buttons(b, [['Cancel', () => { session.rev++; closeSheet(true); }], ['Done', async () => {
   if (working || busy) return;
-  let f = candidate();
-  if (typeof target !== 'string' && f.mode !== 'panels' && frame.panels.some((p, i) => i !== target && p) && !confirm('Replace the other panel images with this source?')) return;
   working = true;
   try {
    await commitStep(f, isNew);
-   if (s.type === 'image' && s.fit !== 'actual') db.defaults = { fit: s.fit, smooth: s.smooth };
+   let s = currentSrc();
+   if (s && s.type === 'image' && s.fit !== 'actual') db.defaults = { fit: s.fit, smooth: s.smooth };
    working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
   } catch (e) { notify(e.message); } finally { working = false; }
  }, 'primary']]);
 
- if (!isNew) {
-  b.append(el('div', undefined, 'separator'));
-  buttons(b, [['Remove image', () => {
-   if (!confirm('Remove this image or pattern?')) return;
-   let i = current.steps.findIndex(f => f.id === frame.id); if (i < 0) return;
-   pushUndo();
-   if (typeof target === 'string') current.steps[i] = { ...blankFrame(), id: frame.id };
-   else { current.steps[i].panels[target] = null; current.steps[i].tiles[target] = ''; }
-   closeSheet(false); changed(); renderEditor(); previewCurrent(true);
-  }, 'danger'], ['Delete entire step', () => deleteStep(frame.id), 'danger']]);
-  buttons(b, [['Move earlier', () => { closeSheet(); moveStep(frame.id, -1); }], ['Move later', () => { closeSheet(); moveStep(frame.id, 1); }]]);
- }
  refresh();
 }
 
-function advancedPattern(frame, target, isNew, source, bgOpts = null) {
- openSheet(bgOpts ? 'Background pattern' : 'Shapes and multicolor patterns');
- let b = $('sheetBody'), s = normalizeSource(source), view = el('div', undefined, 'wall miniPreview');
- if (!bgOpts && !isNew) { let tools = el('div', undefined, 'advancedPattern'); tools.append(button('Background layer', () => openBackgroundEditor(clone(frame)))); b.append(tools); }
- const opts = [['solid', 'Solid'], ['gradient', 'Gradient'], ['checker', 'Checkerboard'], ['stripes', 'Stripes'], ['border', 'Border'], ['diamonds', 'Diamond bands'], ['zigzag', 'Zigzag stripes'], ['dots', 'Dots'], ['heart', 'Hearts'], ['star', 'Stars'], ['circle', 'Circles'], ['square', 'Squares'], ['diamond', 'Diamonds'], ['triangle', 'Triangles'], ['arrow', 'Arrows']];
- let type = select(opts, s.pattern), placement = select([['span', 'Span wall'], ['repeat', 'Repeat on each display'], ['0', 'Display 1'], ['1', 'Display 2'], ['2', 'Display 3'], ['3', 'Display 4']], target);
- b.append(field('Pattern / shape', type), field('Placement', placement));
- let controls = el('div'); b.append(controls, view);
- let advancedSession = { advanced: true }; editorSession = advancedSession; let revision = 0;
-
- function candidate() {
-  let f = clone(frame), dest = placement.value;
-  if (bgOpts) {
-   if (dest === 'span' || dest === 'repeat') { f.bgMode = dest; f.bgSource = clone(s); f.bgPanels = [null, null, null, null]; }
-   else { if (f.bgMode !== 'panels') f.bgPanels = [null, null, null, null]; f.bgMode = 'panels'; f.bgSource = null; f.bgPanels[Number(dest)] = clone(s); }
-   return f;
-  }
-  if (dest === 'span' || dest === 'repeat') { f.mode = dest; f.source = clone(s); f.panels = [null, null, null, null]; }
-  else { if (typeof target === 'string') f.panels = [null, null, null, null]; else if (Number(dest) !== target) f.panels[target] = null; f.mode = 'panels'; f.source = null; f.panels[Number(dest)] = clone(s); }
-  return f;
- }
- async function refresh() {
-  let rev = ++revision;
-  try {
-   let f = candidate(), stepIdx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
-   await regenerate(f, db.layout, stepIdx);
-   if (rev !== revision || editorSession !== advancedSession) return;
-   let w = makeWall(f, db.layout, false); view.style.gridTemplateColumns = w.style.gridTemplateColumns; view.replaceChildren(...Array.from(w.children));
-   queueTiles(f.tiles);
-  } catch (e) { notify(e.message); }
- }
- function number(label, key, min, max) {
-  let lbl = el('label', undefined, 'calRow'), top = el('span', label), val = el('b', s[key] + ' px'); top.append(val);
-  let n = document.createElement('input'); n.type = 'range'; n.min = min; n.max = max; n.step = 1; n.value = s[key];
-  n.oninput = () => { s[key] = Math.max(min, Math.min(max, Math.round(Number(n.value) || min))); val.textContent = s[key] + ' px'; refresh(); };
-  lbl.append(top, n); controls.append(lbl);
- }
- function choiceSlider(label, options, key) {
-  let lbl = el('label', undefined, 'calRow'), top = el('span', label), idx = Math.max(0, options.findIndex(o => String(o[0]) === String(s[key])));
-  let val = el('b', options[idx][1]); top.append(val);
-  let r = document.createElement('input'); r.type = 'range'; r.min = 0; r.max = options.length - 1; r.step = 1; r.value = idx;
-  r.oninput = () => { let chosen = options[Number(r.value)] || options[0]; s[key] = chosen[0]; val.textContent = chosen[1]; refresh(); };
-  lbl.append(top, r); controls.append(lbl);
- }
- function check(label, key, onExtra) { let n = document.createElement('input'); n.type = 'checkbox'; n.checked = !!s[key]; n.onchange = () => { s[key] = n.checked; if (key === 'outline' || onExtra) rebuild(); refresh(); }; controls.append(field(label, n)); }
- function swapColors(from, to) { if (from < 0 || from >= s.colors.length || to < 0 || to >= s.colors.length || from === to) return; let [m] = s.colors.splice(from, 1); s.colors.splice(to, 0, m); s.a = s.colors[0]; s.b = s.colors[1] || s.a; rebuild(); refresh(); }
-
+function renderPatternColors(controls, s, rebuildTray, refresh, onGenerateCycle) {
+ if (!Array.isArray(s.colors) || !s.colors.length) s.colors = [s.a || '#ff3377', s.b || '#3377ff'];
+ let shaped = ['heart', 'star', 'circle', 'square', 'diamond', 'triangle', 'arrow', 'dots'].includes(s.pattern);
+ let colors = el('div', undefined, 'colorRow');
+ const swapColors = (from, to) => {
+  if (from < 0 || from >= s.colors.length || to < 0 || to >= s.colors.length || from === to) return;
+  let [m] = s.colors.splice(from, 1); s.colors.splice(to, 0, m);
+  s.a = s.colors[0]; s.b = s.colors[1] || s.a; rebuildTray();
+ };
  let colorDrag = null;
- function startColorDrag(e, index, item) { if (e.button !== 0 && e.pointerType === 'mouse') return; colorDrag = { index, item, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false, targetIndex: index }; try { item.setPointerCapture(e.pointerId); } catch (_) {} }
- function moveColorDrag(e) {
+ const startColorDrag = (e, index, item) => { if (e.button !== 0 && e.pointerType === 'mouse') return; colorDrag = { index, item, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false, targetIndex: index }; try { item.setPointerCapture(e.pointerId); } catch (_) {} };
+ const moveColorDrag = e => {
   if (!colorDrag || e.pointerId !== colorDrag.pointerId) return;
   if (!colorDrag.active) { if (Math.hypot(e.clientX - colorDrag.startX, e.clientY - colorDrag.startY) < 5) return; colorDrag.active = true; colorDrag.item.classList.add('dragging'); }
   let hit = document.elementFromPoint(e.clientX, e.clientY), t = hit ? hit.closest('.colorItem') : null;
   document.querySelectorAll('.colorItem').forEach(n => n.classList.remove('dropTarget'));
   if (t && t.dataset.index !== undefined) { colorDrag.targetIndex = Number(t.dataset.index); if (colorDrag.targetIndex !== colorDrag.index) t.classList.add('dropTarget'); }
   else colorDrag.targetIndex = colorDrag.index;
- }
- function endColorDrag(e) {
+ };
+ const endColorDrag = e => {
   if (!colorDrag || e.pointerId !== colorDrag.pointerId) return;
   let { index, targetIndex, active, item } = colorDrag; colorDrag = null;
   item.classList.remove('dragging'); document.querySelectorAll('.colorItem').forEach(n => n.classList.remove('dropTarget'));
   try { item.releasePointerCapture(e.pointerId); } catch (_) {}
   if (active && targetIndex !== index && targetIndex >= 0 && targetIndex < s.colors.length) swapColors(index, targetIndex);
- }
+ };
 
- async function generateFullCycle() {
-  if (busy || working) return;
-  let count = s.colors.length; if (count < 2) return notify('Add at least 2 colors to generate a cycle.');
-  s.cycle = true; working = true;
-  try {
-   pushUndo();
-   let f = candidate(), startIdx;
-   if (isNew) {
-    if (current.steps.length + count > 200) throw Error('Exceeds maximum 200 steps');
-    startIdx = current.steps.length;
-    for (let k = 0; k < count; k++) { let step = clone(f); step.id = uid(); await regenerate(step, db.layout, startIdx + k); current.steps.push(step); }
-   } else {
-    startIdx = current.steps.findIndex(x => x.id === f.id);
-    if (startIdx < 0) throw Error('Step missing');
-    if (startIdx + count > 200) throw Error('Exceeds maximum 200 steps');
-    current.steps[startIdx] = f;
-    for (let k = 1; k < count; k++) {
-     let targetIdx = startIdx + k;
-     if (targetIdx >= current.steps.length) current.steps.push(clone(f));
-     else {
-      let dst = current.steps[targetIdx];
-      if (bgOpts) { dst.bgMode = f.bgMode; dst.bgSource = clone(f.bgSource); dst.bgPanels = clone(f.bgPanels); }
-      else if (f.mode === 'span' || f.mode === 'repeat') { dst.mode = f.mode; dst.source = clone(f.source); dst.panels = [null, null, null, null]; }
-      else { if (dst.mode !== 'panels') { dst.mode = 'panels'; dst.source = null; } dst.panels[Number(placement.value)] = clone(s); }
-     }
-    }
-    for (let k = 0; k < count; k++) await regenerate(current.steps[startIdx + k], db.layout, startIdx + k);
-   }
-   selected = startIdx; revision++; working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
-   notify('Generated ' + count + '-step color cycle.');
-  } catch (e) { notify(e.message); } finally { working = false; }
+ s.colors.forEach((color, i) => {
+  let isTrans = color === 'transparent', item = el('div', undefined, 'colorItem'); item.dataset.index = i; item.draggable = true;
+  let header = el('div', undefined, 'colorItemHeader'), handle = el('span', '⠿', 'colorDragHandle'), label = el('span', '#' + (i + 1), 'colorIndex'), nav = el('div', undefined, 'colorNav');
+  handle.title = 'Drag to reorder';
+  let leftBtn = document.createElement('button'); leftBtn.type = 'button'; leftBtn.className = 'colorMoveBtn'; leftBtn.textContent = '◀'; leftBtn.disabled = i === 0;
+  leftBtn.onclick = e => { e.stopPropagation(); swapColors(i, i - 1); };
+  let rightBtn = document.createElement('button'); rightBtn.type = 'button'; rightBtn.className = 'colorMoveBtn'; rightBtn.textContent = '▶'; rightBtn.disabled = i === s.colors.length - 1;
+  rightBtn.onclick = e => { e.stopPropagation(); swapColors(i, i + 1); };
+  nav.append(leftBtn, rightBtn); header.append(handle, label, nav);
+  let input = document.createElement('input'); input.type = 'color'; input.value = isTrans ? '#000000' : color; if (isTrans) input.classList.add('isTransparent');
+  input.oninput = () => { s.colors[i] = input.value; s.a = s.colors[0]; s.b = s.colors[1] || s.a; refresh(); };
+  let transBtn = button('∅', e => { e.stopPropagation(); s.colors[i] = s.colors[i] === 'transparent' ? '#ffffff' : 'transparent'; s.a = s.colors[0]; s.b = s.colors[1] || s.a; rebuildTray(); }, 'colorTransBtn' + (isTrans ? ' active' : ''));
+  handle.onpointerdown = e => startColorDrag(e, i, item);
+  item.onpointermove = moveColorDrag; item.onpointerup = endColorDrag; item.onpointercancel = endColorDrag;
+  item.ondragstart = e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; item.classList.add('dragging'); };
+  item.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; document.querySelectorAll('.colorItem').forEach(n => n.classList.remove('dropTarget')); item.classList.add('dropTarget'); };
+  item.ondragleave = () => item.classList.remove('dropTarget');
+  item.ondrop = e => { e.preventDefault(); item.classList.remove('dropTarget'); let from = Number(e.dataTransfer.getData('text/plain')); if (Number.isFinite(from)) swapColors(from, i); };
+  item.ondragend = () => { item.classList.remove('dragging'); document.querySelectorAll('.colorItem').forEach(n => n.classList.remove('dropTarget')); };
+  item.append(header, input, transBtn); colors.append(item);
+ });
+ controls.append(colors);
+ buttons(controls, [['Add color', () => { if (s.colors.length < 8) { s.colors.push('#ffffff'); rebuildTray(); } }], ['Remove last', () => { if (s.colors.length > 1) { s.colors.pop(); rebuildTray(); } }]]);
+ if (shaped) {
+  let bgTrans = s.background === 'transparent', bgRow = el('div', undefined, 'bgColorRow');
+  let bg = document.createElement('input'); bg.type = 'color'; bg.value = bgTrans ? '#000000' : s.background; if (bgTrans) bg.classList.add('isTransparent');
+  bg.oninput = () => { s.background = bg.value; refresh(); };
+  let bgTBtn = button(bgTrans ? 'Transparent (∅)' : 'Make transparent (∅)', () => { s.background = s.background === 'transparent' ? '#000000' : 'transparent'; rebuildTray(); }, 'colorTransBtn' + (bgTrans ? ' active' : ''));
+  bgRow.append(bg, bgTBtn); controls.append(field('Shape background', bgRow));
  }
-
- function rebuild() {
-  controls.replaceChildren();
-  let shaped = ['heart', 'star', 'circle', 'square', 'diamond', 'triangle', 'arrow', 'dots'].includes(s.pattern), colors = el('div', undefined, 'colorRow');
-  s.colors.forEach((color, i) => {
-   let isTrans = color === 'transparent', item = el('div', undefined, 'colorItem'); item.dataset.index = i; item.draggable = true;
-   let header = el('div', undefined, 'colorItemHeader'), handle = el('span', '⠿', 'colorDragHandle'), label = el('span', '#' + (i + 1), 'colorIndex'), nav = el('div', undefined, 'colorNav');
-   handle.title = 'Drag to reorder';
-   let leftBtn = document.createElement('button'); leftBtn.type = 'button'; leftBtn.className = 'colorMoveBtn'; leftBtn.textContent = '◀'; leftBtn.title = 'Move earlier'; leftBtn.disabled = i === 0;
-   leftBtn.onclick = e => { e.stopPropagation(); swapColors(i, i - 1); };
-   let rightBtn = document.createElement('button'); rightBtn.type = 'button'; rightBtn.className = 'colorMoveBtn'; rightBtn.textContent = '▶'; rightBtn.title = 'Move later'; rightBtn.disabled = i === s.colors.length - 1;
-   rightBtn.onclick = e => { e.stopPropagation(); swapColors(i, i + 1); };
-   nav.append(leftBtn, rightBtn); header.append(handle, label, nav);
-   let input = document.createElement('input'); input.type = 'color'; input.value = isTrans ? '#000000' : color; if (isTrans) input.classList.add('isTransparent');
-   input.oninput = () => { s.colors[i] = input.value; s.a = s.colors[0]; s.b = s.colors[1] || s.a; refresh(); };
-   let transBtn = button('∅', e => { e.stopPropagation(); s.colors[i] = s.colors[i] === 'transparent' ? '#ffffff' : 'transparent'; s.a = s.colors[0]; s.b = s.colors[1] || s.a; rebuild(); refresh(); }, 'colorTransBtn' + (isTrans ? ' active' : ''));
-   transBtn.title = isTrans ? 'Transparent (tap to set color)' : 'Make transparent';
-   handle.onpointerdown = e => startColorDrag(e, i, item);
-   item.onpointermove = moveColorDrag; item.onpointerup = endColorDrag; item.onpointercancel = endColorDrag;
-   item.ondragstart = e => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; item.classList.add('dragging'); };
-   item.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; document.querySelectorAll('.colorItem').forEach(n => n.classList.remove('dropTarget')); item.classList.add('dropTarget'); };
-   item.ondragleave = () => item.classList.remove('dropTarget');
-   item.ondrop = e => { e.preventDefault(); item.classList.remove('dropTarget'); let from = Number(e.dataTransfer.getData('text/plain')); if (Number.isFinite(from)) swapColors(from, i); };
-   item.ondragend = () => { item.classList.remove('dragging'); document.querySelectorAll('.colorItem').forEach(n => n.classList.remove('dropTarget')); };
-   item.append(header, input, transBtn); colors.append(item);
-  });
-  controls.append(colors);
-  buttons(controls, [['Add color', () => { if (s.colors.length < 8) { s.colors.push('#ffffff'); rebuild(); refresh(); } }], ['Remove last', () => { if (s.colors.length > 1) { s.colors.pop(); rebuild(); refresh(); } }]]);
-  if (s.colors.length > 1) controls.append(hint('Drag ⠿ or use ◀ / ▶ to reorder. Tap ∅ for transparent.'));
-  if (s.pattern === 'solid') controls.append(hint('Solid uses the first palette color.'));
-  if (s.pattern === 'border') controls.append(hint('Border uses the first color inside and second color on the edge.'));
-  if (shaped) {
-   let bgTrans = s.background === 'transparent', bgRow = el('div', undefined, 'bgColorRow');
-   let bg = document.createElement('input'); bg.type = 'color'; bg.value = bgTrans ? '#000000' : s.background; if (bgTrans) bg.classList.add('isTransparent');
-   bg.oninput = () => { s.background = bg.value; refresh(); };
-   let bgTBtn = button(bgTrans ? 'Transparent (∅)' : 'Make transparent (∅)', () => { s.background = s.background === 'transparent' ? '#000000' : 'transparent'; rebuild(); refresh(); }, 'colorTransBtn' + (bgTrans ? ' active' : ''));
-   bgRow.append(bg, bgTBtn); controls.append(field('Shape background', bgRow));
-   choiceSlider('Direction / rotation', [[0, 'Up / 0°'], [90, 'Right / 90°'], [180, 'Down / 180°'], [270, 'Left / 270°']], 'rotation');
-   check('Repeat shapes in a grid', 'tiled'); check('Outline instead of filled', 'outline'); number('Spacing', 'spacing', 0, 32);
-  }
-  if (['gradient', 'stripes', 'zigzag'].includes(s.pattern)) choiceSlider('Direction', [['horizontal', 'Horizontal'], ['vertical', 'Vertical'], ['diagonal', 'Diagonal'], ['antidiagonal', 'Opposite diagonal']], 'direction');
-  if (!['solid', 'gradient'].includes(s.pattern)) number(shaped ? 'Shape size' : 'Pattern width', 'size', 1, 64);
-  if (s.outline || s.pattern === 'border') number('Outline / border thickness', 'thickness', 1, 8);
-  check('Rotate colors across steps', 'cycle', true);
-  if (s.cycle && s.colors.length > 1) buttons(controls, [['Generate full cycle (' + s.colors.length + ' steps)', generateFullCycle]]);
- }
- type.onchange = () => { s.pattern = type.value; if (!s.size) s.size = 4; rebuild(); refresh(); };
- placement.onchange = refresh; rebuild();
-
- buttons(b, [['Cancel', () => { revision++; closeSheet(true); if (live) previewCurrent(true); }], ['Done', async () => {
-  if (busy || working) return;
-  working = true;
-  try {
-   let f = candidate();
-   if (!bgOpts && !isNew && f.mode !== 'panels' && frame.mode === 'panels' && frame.panels.some((p, i) => i !== target && p) && !confirm('Replace other panel images with this wall source?')) return;
-   await commitStep(f, !!(bgOpts ? bgOpts.isNewStep : isNew));
-   if (bgOpts && bgOpts.applyAll) {
-    for (let k = 0; k < current.steps.length; k++) {
-     current.steps[k].bgMode = f.bgMode; current.steps[k].bgSource = clone(f.bgSource); current.steps[k].bgPanels = clone(f.bgPanels);
-     await regenerate(current.steps[k], db.layout, k);
-    }
-   }
-   revision++; working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
-  } catch (e) { notify(e.message); } finally { working = false; }
- }, 'primary']]);
-
- if (!isNew && !bgOpts) {
-  b.append(el('div', undefined, 'separator'));
-  buttons(b, [['Remove pattern', () => {
-   if (!confirm('Remove this pattern?')) return;
-   let i = current.steps.findIndex(f => f.id === frame.id); if (i < 0) return;
-   pushUndo();
-   if (typeof target === 'string') {
-    let prevBg = { bgMode: current.steps[i].bgMode, bgSource: current.steps[i].bgSource, bgPanels: current.steps[i].bgPanels };
-    current.steps[i] = { ...blankFrame(), id: frame.id, ...prevBg };
-   } else { current.steps[i].panels[target] = null; current.steps[i].tiles[target] = ''; }
-   closeSheet(false); changed(); renderEditor(); previewCurrent(true);
-  }, 'danger'], ['Delete entire step', () => deleteStep(frame.id), 'danger']]);
-  buttons(b, [['Move earlier', () => { closeSheet(); moveStep(frame.id, -1); }], ['Move later', () => { closeSheet(); moveStep(frame.id, 1); }]]);
- }
- refresh();
+ let cyc = document.createElement('input'); cyc.type = 'checkbox'; cyc.checked = !!s.cycle;
+ cyc.onchange = () => { s.cycle = cyc.checked; rebuildTray(); };
+ let cycLbl = el('label', undefined, 'check'); cycLbl.append(cyc, document.createTextNode('Rotate colors across steps'));
+ controls.append(cycLbl);
+ if (s.cycle && s.colors.length > 1) buttons(controls, [['Generate full cycle (' + s.colors.length + ' steps)', onGenerateCycle]]);
 }
 
-function openBackgroundEditor(frame, applyAllDefault = false, isNewStep = false) {
- openSheet('Background layer');
- let b = $('sheetBody'), f = clone(frame);
- if (!f.bgMode) f.bgMode = 'none';
- if (!Array.isArray(f.bgPanels)) f.bgPanels = [null, null, null, null];
- let session = { bg: true, rev: 0 }; editorSession = session;
- let bgType = select([['none', 'None (Black)'], ['image', 'Image'], ['pattern', 'Custom pattern / shapes']], f.bgMode === 'none' ? 'none' : ((f.bgMode === 'panels' ? f.bgPanels.find(Boolean) : f.bgSource)?.type || 'image'));
- let placement = select([['span', 'Span across all four'], ['repeat', 'Repeat on all four'], ['0', 'Display 1'], ['1', 'Display 2'], ['2', 'Display 3'], ['3', 'Display 4']], f.bgMode === 'none' ? 'span' : f.bgMode === 'panels' ? Math.max(0, f.bgPanels.findIndex(Boolean)) : f.bgMode);
- let controls = el('div'), view = el('div', undefined, 'wall miniPreview');
- b.append(field('Background type', bgType), field('Background placement', placement), controls, view);
- let activeBgSrc = (f.bgMode === 'panels' ? f.bgPanels.find(Boolean) : f.bgSource) || null;
-
- function syncFrame() {
-  let out = clone(f), t = bgType.value, dest = ['span', 'repeat'].includes(placement.value) ? placement.value : Number(placement.value);
-  if (t === 'none' || !activeBgSrc) { out.bgMode = 'none'; out.bgSource = null; out.bgPanels = [null, null, null, null]; }
-  else if (typeof dest === 'string') { out.bgMode = dest; out.bgSource = clone(activeBgSrc); out.bgPanels = [null, null, null, null]; }
-  else { out.bgMode = 'panels'; out.bgSource = null; out.bgPanels = [0, 1, 2, 3].map(i => i === dest ? clone(activeBgSrc) : null); }
-  return out;
+function renderPatternStyle(controls, s, rebuildTray, refresh) {
+ let shaped = ['heart', 'star', 'circle', 'square', 'diamond', 'triangle', 'arrow', 'dots'].includes(s.pattern);
+ const number = (label, key, min, max) => {
+  let lbl = el('label', undefined, 'calRow'), top = el('span', label), val = el('b', s[key] + ' px'); top.append(val);
+  let n = document.createElement('input'); n.type = 'range'; n.min = min; n.max = max; n.step = 1; n.value = s[key];
+  n.oninput = () => { s[key] = Math.max(min, Math.min(max, Math.round(Number(n.value) || min))); val.textContent = s[key] + ' px'; refresh(); };
+  lbl.append(top, n); controls.append(lbl);
+ };
+ const choiceSlider = (label, options, key) => {
+  let lbl = el('label', undefined, 'calRow'), top = el('span', label), idx = Math.max(0, options.findIndex(o => String(o[0]) === String(s[key])));
+  let val = el('b', options[idx][1]); top.append(val);
+  let r = document.createElement('input'); r.type = 'range'; r.min = 0; r.max = options.length - 1; r.step = 1; r.value = idx;
+  r.oninput = () => { let chosen = options[Number(r.value)] || options[0]; s[key] = chosen[0]; val.textContent = chosen[1]; refresh(); };
+  lbl.append(top, r); controls.append(lbl);
+ };
+ const check = (label, key, rebuildOnChange) => {
+  let n = document.createElement('input'); n.type = 'checkbox'; n.checked = !!s[key];
+  n.onchange = () => { s[key] = n.checked; if (rebuildOnChange) rebuildTray(); else refresh(); };
+  let lbl = el('label', undefined, 'check'); lbl.append(n, document.createTextNode(label)); controls.append(lbl);
+ };
+ if (shaped) {
+  choiceSlider('Direction / rotation', [[0, 'Up / 0°'], [90, 'Right / 90°'], [180, 'Down / 180°'], [270, 'Left / 270°']], 'rotation');
+  check('Repeat shapes in a grid', 'tiled', false);
+  check('Outline instead of filled', 'outline', true);
+  number('Spacing', 'spacing', 0, 32);
  }
- async function refresh() {
-  let rev = ++session.rev;
-  try {
-   let cand = syncFrame(), idx = Math.max(0, current.steps.findIndex(x => x.id === cand.id));
-   await regenerate(cand, db.layout, idx);
-   if (editorSession !== session || rev !== session.rev) return;
-   let w = makeWall(cand, db.layout, false); view.style.gridTemplateColumns = w.style.gridTemplateColumns; view.replaceChildren(...Array.from(w.children));
-   queueTiles(cand.tiles, [0, 1, 2, 3], false, true);
-  } catch (e) { notify(e.message); }
- }
- function rebuild() {
-  controls.replaceChildren();
-  placement.parentElement.hidden = bgType.value === 'none';
-  if (bgType.value === 'none') return;
-  if (bgType.value === 'image') {
-   let pickBgGif = next => {
-    let dest = ['span', 'repeat'].includes(placement.value) ? placement.value : Number(placement.value);
-    let idx = isNewStep ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
-    openGifEditor({ groupId: null, target: dest, layer: 'bg', insertIndex: idx, isNew: isNewStep, frames: next.frames, fit: next.fit || db.defaults.fit, smooth: db.defaults.smooth, alignX: 0.5, alignY: 0.5, zoom: 1, truncated: next.truncated });
-   };
-   if (activeBgSrc && activeBgSrc.gifGroupId && current.gifGroups && current.gifGroups[activeBgSrc.gifGroupId]) {
-    let g = current.gifGroups[activeBgSrc.gifGroupId];
-    buttons(controls, [['Edit background GIF', () => openGifEditor({ groupId: g.id, target: g.target, layer: 'bg', insertIndex: Math.max(0, current.steps.findIndex(x => x.id === f.id)), isNew: false, frames: clone(g.frames), fit: g.fit, smooth: g.smooth, alignX: g.alignX ?? 0.5, alignY: g.alignY ?? 0.5, zoom: g.zoom ?? 1, truncated: false }), 'primary']]);
-   }
-   if (!activeBgSrc || activeBgSrc.type !== 'image') {
-    buttons(controls, [['Choose background image', () => pickImage(next => { if (next.type === 'gif') { pickBgGif(next); return; } activeBgSrc = next; rebuild(); refresh(); }), 'primary']]);
-   } else {
-    let img = el('img', undefined, 'sourcePreview'); img.src = activeBgSrc.src; img.alt = 'Background'; controls.append(img);
-    buttons(controls, [['Change image', () => pickImage(next => { if (next.type === 'gif') { pickBgGif(next); return; } activeBgSrc = next; rebuild(); refresh(); })]]);
-    buildImageControls(controls, activeBgSrc, refresh);
-   }
-  } else {
-   if (!activeBgSrc || activeBgSrc.type !== 'pattern') activeBgSrc = patternSpec();
-   buttons(controls, [['Edit pattern & colors', () => {
-    let cand = syncFrame();
-    advancedPattern(cand, placement.value === 'span' || placement.value === 'repeat' ? placement.value : Number(placement.value), false, activeBgSrc, { applyAll: applyAllDefault });
-   }, 'primary']]);
-  }
- }
- bgType.onchange = () => { if (bgType.value === 'pattern' && (!activeBgSrc || activeBgSrc.type !== 'pattern')) activeBgSrc = patternSpec(); rebuild(); refresh(); };
- placement.onchange = refresh; rebuild();
-
- async function commitBg(allSteps) {
-  if (working || busy) return;
-  working = true;
-  try {
-   let cand = syncFrame();
-   await commitStep(cand, isNewStep);
-   if (allSteps) {
-    for (let k = 0; k < current.steps.length; k++) {
-     current.steps[k].bgMode = cand.bgMode; current.steps[k].bgSource = clone(cand.bgSource); current.steps[k].bgPanels = clone(cand.bgPanels);
-     await regenerate(current.steps[k], db.layout, k);
-    }
-   }
-   working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
-  } catch (e) { notify(e.message); } finally { working = false; }
- }
- buttons(b, [['Cancel', () => closeSheet(true)], ['Apply to this step', () => commitBg(false), applyAllDefault ? '' : 'primary'], ['Apply to all steps', () => commitBg(true), applyAllDefault ? 'primary' : '']]);
- refresh();
+ if (['gradient', 'stripes', 'zigzag'].includes(s.pattern)) choiceSlider('Direction', [['horizontal', 'Horizontal'], ['vertical', 'Vertical'], ['diagonal', 'Diagonal'], ['antidiagonal', 'Opposite diagonal']], 'direction');
+ if (!['solid', 'gradient'].includes(s.pattern)) number(shaped ? 'Shape size' : 'Pattern width', 'size', 1, 64);
+ if (s.outline || s.pattern === 'border') number('Outline / border thickness', 'thickness', 1, 8);
+ if (['solid', 'gradient'].includes(s.pattern) && !shaped && s.pattern === 'solid') controls.append(hint('Solid uses the first color in the Colors tab.'));
 }
 
 async function flipTileDataUrl(src, dir) {
@@ -652,11 +616,12 @@ function copyTileSheet(id) {
    let srcSpec = (tf === 'copy' && f.mode === 'panels' && f.panels[srcIdx]) ? clone(f.panels[srcIdx]) : { type: 'image', src: outTile, fit: 'actual', smooth: false, alignX: 0.5, alignY: 0.5, zoom: 1 };
    if (srcSpec.gifGroupId) delete srcSpec.gifGroupId;
    const writePanel = (step, slot) => {
-    if (step.mode !== 'panels') {
-     let oldTiles = step.tiles.slice(); step.mode = 'panels'; step.source = null;
-     step.panels = [0, 1, 2, 3].map(p => oldTiles[p] ? { type: 'image', src: oldTiles[p], fit: 'actual', smooth: false, alignX: 0.5, alignY: 0.5, zoom: 1 } : null);
+    let layers = ensureStepLayers(step), top = layers[layers.length - 1];
+    if (top.mode !== 'panels') {
+     let oldTiles = step.tiles.slice(); top.mode = 'panels'; top.source = null;
+     top.panels = [0, 1, 2, 3].map(p => oldTiles[p] ? { type: 'image', src: oldTiles[p], fit: 'actual', smooth: false, alignX: 0.5, alignY: 0.5, zoom: 1 } : null);
     }
-    step.panels[slot] = clone(srcSpec); step.tiles[slot] = outTile;
+    top.panels[slot] = clone(srcSpec); step.tiles[slot] = outTile; syncLegacyFields(step);
    };
    if (destMode === 'allOther') { for (let p = 0; p < 4; p++) if (p !== srcIdx) writePanel(f, p); }
    else if (destMode === 'allSteps') { for (let st of current.steps) writePanel(st, srcIdx); }
@@ -689,20 +654,7 @@ async function moveStep(id, delta) {
 function stepOptions(id) {
  if (busy || working) return;
  let f = current.steps.find(x => x.id === id); if (!f) return;
- openSheet('Step ' + (current.steps.indexOf(f) + 1));
- let b = $('sheetBody');
- if (f.mode !== 'panels') buttons(b, [['Edit source', () => openSource(id, 0), 'primary']]);
- else { let positions = el('div', undefined, 'placement'); for (let i = 0; i < 4; i++) positions.append(button('Display ' + (i + 1), () => openSource(id, i))); b.append(positions); }
- buttons(b, [['Background layer', () => openBackgroundEditor(clone(f))], ['Copy / mirror tile', () => copyTileSheet(id)]]);
- buttons(b, [['Move earlier', () => { closeSheet(false); moveStep(id, -1); }], ['Move later', () => { closeSheet(false); moveStep(id, 1); }]]);
- buttons(b, [['Duplicate', async () => {
-  if (current.steps.length >= 200) return;
-  pushUndo();
-  let copy = clone(f); copy.id = uid();
-  let i = current.steps.findIndex(x => x.id === id);
-  current.steps.splice(i + 1, 0, copy); selected = i + 1;
-  await refreshCyclingSteps(); closeSheet(false); changed(); renderEditor(); previewCurrent(true);
- }], ['Delete step', () => deleteStep(id), 'danger']]);
+ openStepStudio(clone(f), { isNew: false, panelIdx: 0 });
 }
 
 let drag = null, suppressClick = false, suppressTimer = null;

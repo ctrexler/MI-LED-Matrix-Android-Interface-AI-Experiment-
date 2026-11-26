@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION = '0.5.9';
+const APP_VERSION = '0.6.0';
 const $ = id => document.getElementById(id);
 const clone = x => typeof structuredClone === 'function' ? structuredClone(x) : JSON.parse(JSON.stringify(x));
 const uid = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
@@ -30,7 +30,8 @@ let storedSlot = 0, storageDraft = null, undoStack = [], redoStack = [];
 const imageCache = new Map(), simCache = new Map();
 const extraPatterns = ['heart', 'star', 'circle', 'square', 'diamond', 'triangle', 'arrow', 'diamonds', 'dots', 'zigzag'];
 
-const blankFrame = () => ({ id: uid(), mode: 'panels', source: null, panels: [null, null, null, null], tiles: ['', '', '', ''], bgMode: 'none', bgSource: null, bgPanels: [null, null, null, null] });
+const blankLayer = (mode = 'panels', source = null, panels = [null, null, null, null], name = 'Layer 1') => ({ id: uid(), name, visible: true, mode, source, panels });
+const blankFrame = () => ({ id: uid(), mode: 'panels', source: null, panels: [null, null, null, null], tiles: ['', '', '', ''], bgMode: 'none', bgSource: null, bgPanels: [null, null, null, null], layers: [blankLayer('panels', null, [null, null, null, null], 'Layer 1')] });
 const blankSequence = () => ({ id: uid(), name: 'New sequence', cols: db.layout, steps: [], gifGroups: {} });
 const imageSpec = (src, fit = db.defaults.fit) => ({ type: 'image', src, fit, smooth: db.defaults.smooth, alignX: 0.5, alignY: 0.5, zoom: 1 });
 const patternSpec = () => ({ type: 'pattern', pattern: 'gradient', a: '#ff3377', b: '#3377ff', colors: ['#ff3377', '#3377ff'], background: '#000000', direction: 'diagonal', size: 4, thickness: 1, rotation: 0, tiled: false, outline: false, spacing: 0, cycle: false });
@@ -66,6 +67,38 @@ function normalizeSource(s) {
  return img;
 }
 
+function ensureStepLayers(f) {
+ if (Array.isArray(f.layers) && f.layers.length) return f.layers;
+ let list = [];
+ if (f.bgMode && f.bgMode !== 'none') {
+  list.push(blankLayer(f.bgMode, f.bgSource || null, Array.isArray(f.bgPanels) ? f.bgPanels : [null, null, null, null], 'Background'));
+ }
+ list.push(blankLayer(f.mode || 'panels', f.source || null, Array.isArray(f.panels) ? f.panels : [null, null, null, null], list.length ? 'Foreground' : 'Layer 1'));
+ f.layers = list;
+ return list;
+}
+
+function syncLegacyFields(f) {
+ let layers = ensureStepLayers(f);
+ let top = layers[layers.length - 1] || blankLayer();
+ f.mode = top.mode; f.source = top.source; f.panels = top.panels;
+ if (layers.length > 1) {
+  let bot = layers[0];
+  f.bgMode = bot.mode; f.bgSource = bot.source; f.bgPanels = bot.panels;
+ } else {
+  f.bgMode = 'none'; f.bgSource = null; f.bgPanels = [null, null, null, null];
+ }
+}
+
+function normalizeLayer(L, idx) {
+ if (!L || typeof L !== 'object') throw Error('Invalid layer');
+ let mode = ['span', 'repeat', 'panels'].includes(L.mode) ? L.mode : 'panels';
+ let source = mode !== 'panels' ? normalizeSource(L.source) : null;
+ let panels = Array.isArray(L.panels) && L.panels.length === 4 ? L.panels.map(normalizeSource) : [null, null, null, null];
+ if (mode !== 'panels' && !source) mode = 'panels';
+ return { id: typeof L.id === 'string' ? L.id : uid(), name: typeof L.name === 'string' && L.name.trim() ? L.name.slice(0, 40) : 'Layer ' + (idx + 1), visible: L.visible !== false, mode, source, panels };
+}
+
 function normalizeSequence(s) {
  if (!s || typeof s.name !== 'string' || !Array.isArray(s.steps) || s.steps.length > 200) throw Error('Invalid sequence');
  let cols = [1, 2, 4].includes(s.cols) ? s.cols : 2;
@@ -90,7 +123,12 @@ function normalizeSequence(s) {
   gifGroups,
   steps: s.steps.map(f => {
    if (!f || !Array.isArray(f.tiles) || f.tiles.length !== 4 || f.tiles.some(t => t !== '' && !imageData(t))) throw Error('Invalid rendered tiles');
-   if (!f.mode && !f.kind) return { id: uid(), mode: 'panels', source: null, panels: f.tiles.map(t => t ? { type: 'image', src: t, fit: 'contain', smooth: false } : null), tiles: f.tiles.slice(), bgMode: 'none', bgSource: null, bgPanels: [null, null, null, null] };
+   if (!f.mode && !f.kind && !Array.isArray(f.layers)) {
+    let panels = f.tiles.map(t => t ? { type: 'image', src: t, fit: 'contain', smooth: false } : null);
+    let step = { id: uid(), mode: 'panels', source: null, panels, tiles: f.tiles.slice(), bgMode: 'none', bgSource: null, bgPanels: [null, null, null, null] };
+    ensureStepLayers(step);
+    return step;
+   }
    let mode = f.mode || (f.kind === 'wall' ? 'span' : 'panels');
    if (!['span', 'repeat', 'panels'].includes(mode) || !Array.isArray(f.panels) || f.panels.length !== 4) throw Error('Invalid step mode');
    let source = normalizeSource(f.source || f.wall), panels = f.panels.map(normalizeSource);
@@ -99,7 +137,11 @@ function normalizeSequence(s) {
    let bgSource = bgMode === 'span' || bgMode === 'repeat' ? normalizeSource(f.bgSource) : null;
    let bgPanels = Array.isArray(f.bgPanels) && f.bgPanels.length === 4 ? f.bgPanels.map(normalizeSource) : [null, null, null, null];
    if ((bgMode === 'span' || bgMode === 'repeat') && !bgSource) bgMode = 'none';
-   return { id: typeof f.id === 'string' ? f.id : uid(), mode, source, panels, tiles: f.tiles.slice(), bgMode, bgSource, bgPanels };
+   let step = { id: typeof f.id === 'string' ? f.id : uid(), mode, source, panels, tiles: f.tiles.slice(), bgMode, bgSource, bgPanels };
+   if (Array.isArray(f.layers) && f.layers.length) step.layers = f.layers.slice(0, 8).map(normalizeLayer);
+   ensureStepLayers(step);
+   syncLegacyFields(step);
+   return step;
   })
  };
 }

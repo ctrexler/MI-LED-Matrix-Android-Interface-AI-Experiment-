@@ -207,11 +207,10 @@ async function renderSource(s, w, h, stepOffset = 0, transparent = false) {
 function sourceCycles(s) { return !!(s && s.type === 'pattern' && s.cycle); }
 function stepCycles(f) {
  if (!f) return false;
- if ((f.mode === 'span' || f.mode === 'repeat') && sourceCycles(f.source)) return true;
- if (f.mode === 'panels' && Array.isArray(f.panels) && f.panels.some(sourceCycles)) return true;
- if ((f.bgMode === 'span' || f.bgMode === 'repeat') && sourceCycles(f.bgSource)) return true;
- if (f.bgMode === 'panels' && Array.isArray(f.bgPanels) && f.bgPanels.some(sourceCycles)) return true;
- return false;
+ return ensureStepLayers(f).some(L => L.visible !== false && (
+  (L.mode !== 'panels' && sourceCycles(L.source)) ||
+  (L.mode === 'panels' && Array.isArray(L.panels) && L.panels.some(sourceCycles))
+ ));
 }
 async function refreshCyclingSteps() {
  for (let i = 0; i < current.steps.length; i++) if (stepCycles(current.steps[i])) await regenerate(current.steps[i], db.layout, i);
@@ -219,40 +218,35 @@ async function refreshCyclingSteps() {
 
 async function regenerate(f, cols = db.layout, stepIndex = null) {
  let idx = stepIndex !== null ? stepIndex : (current ? Math.max(0, current.steps.indexOf(f)) : 0);
- let bgMode = f.bgMode || 'none', bg = [null, null, null, null];
- if (bgMode === 'span' && f.bgSource) {
-  let bc = await renderSource(f.bgSource, cols * 16, 64 / cols, idx, false);
-  for (let i = 0; i < 4; i++) { bg[i] = canvas(16, 16, false); bg[i].getContext('2d').drawImage(bc, (i % cols) * 16, Math.floor(i / cols) * 16, 16, 16, 0, 0, 16, 16); }
- } else if (bgMode === 'repeat' && f.bgSource) {
-  let tile = await renderSource(f.bgSource, 16, 16, idx, false);
-  for (let i = 0; i < 4; i++) bg[i] = tile;
- } else if (bgMode === 'panels' && Array.isArray(f.bgPanels)) {
-  for (let i = 0; i < 4; i++) if (f.bgPanels[i]) bg[i] = await renderSource(f.bgPanels[i], 16, 16, idx, false);
- }
- const composite = (fg, i) => {
-  let out = canvas(16, 16, false), ox = out.getContext('2d');
-  if (bg[i]) ox.drawImage(bg[i], 0, 0, 16, 16);
-  if (fg) ox.drawImage(fg, 0, 0, 16, 16);
-  return out.toDataURL('image/png');
- };
- if (f.mode === 'span') {
-  let c = await renderSource(f.source, cols * 16, 64 / cols, idx, bgMode !== 'none');
-  for (let i = 0; i < 4; i++) {
-   let t = canvas(16, 16, true);
-   t.getContext('2d').drawImage(c, (i % cols) * 16, Math.floor(i / cols) * 16, 16, 16, 0, 0, 16, 16);
-   f.tiles[i] = composite(t, i);
-  }
- } else if (f.mode === 'repeat') {
-  let fg = await renderSource(f.source, 16, 16, idx, bgMode !== 'none');
-  for (let i = 0; i < 4; i++) f.tiles[i] = composite(fg, i);
- } else {
-  for (let i = 0; i < 4; i++) {
-   if (f.panels[i]) {
-    let fg = await renderSource(f.panels[i], 16, 16, idx, bgMode !== 'none');
-    f.tiles[i] = composite(fg, i);
-   } else f.tiles[i] = bg[i] ? composite(null, i) : '';
+ let layers = ensureStepLayers(f);
+ syncLegacyFields(f);
+ let out = [canvas(16, 16, false), canvas(16, 16, false), canvas(16, 16, false), canvas(16, 16, false)];
+ let hasContent = [false, false, false, false];
+ for (let L of layers) {
+  if (L.visible === false) continue;
+  if (L.mode === 'span' && L.source) {
+   let c = await renderSource(L.source, cols * 16, 64 / cols, idx, true);
+   for (let i = 0; i < 4; i++) {
+    out[i].getContext('2d').drawImage(c, (i % cols) * 16, Math.floor(i / cols) * 16, 16, 16, 0, 0, 16, 16);
+    hasContent[i] = true;
+   }
+  } else if (L.mode === 'repeat' && L.source) {
+   let tile = await renderSource(L.source, 16, 16, idx, true);
+   for (let i = 0; i < 4; i++) {
+    out[i].getContext('2d').drawImage(tile, 0, 0, 16, 16);
+    hasContent[i] = true;
+   }
+  } else if (L.mode === 'panels' && Array.isArray(L.panels)) {
+   for (let i = 0; i < 4; i++) {
+    if (L.panels[i]) {
+     let tile = await renderSource(L.panels[i], 16, 16, idx, true);
+     out[i].getContext('2d').drawImage(tile, 0, 0, 16, 16);
+     hasContent[i] = true;
+    }
+   }
   }
  }
+ for (let i = 0; i < 4; i++) f.tiles[i] = hasContent[i] ? out[i].toDataURL('image/png') : '';
 }
 
 function clearPending() { clearTimeout(liveTimer); pendingTiles = [undefined, undefined, undefined, undefined]; liveVersions = liveVersions.map(n => n + 1); lastTiles = [undefined, undefined, undefined, undefined]; }

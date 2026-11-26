@@ -1,5 +1,8 @@
 # LED Matrix Controller Version History
 
+## 0.6.0 — 2026-11-26
+- Unified the step editor into **Step Studio** (`openStepStudio()`) with a pinned live preview, an **add/delete/reorder/visibility Layer Stack** (up to 8 layers per step, backwards compatible with legacy sequences), and an **icon category toolbar** (`Source`, `Placement`, `Fit & Zoom`, `Colors`, `Style`, `Step`).
+
 ## 0.5.9 — 2026-11-26
 - Split the monolithic `app.js` into focused modules (`core.js`, `render.js`, `gif.js`, `editor.js`, `storage.js`, `app.js`) and updated CI to syntax-check all asset scripts.
 - Optimized runtime performance: `structuredClone` for `clone()`, reusable 16×16 scratch canvas in `rgbTile()`/`displayTileSrc()`, in-place `.selected`/`.playing` DOM updates (`updateGridSelection()`), and live-frame-only GIF slider preview with debounced thumbnail regeneration.

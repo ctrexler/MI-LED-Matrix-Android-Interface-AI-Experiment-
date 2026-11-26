@@ -321,38 +321,46 @@ async function applyGifGroup({ groupId, target, layer = 'fg', insertIndex, frame
 
  for (let k = 0; k < active.length; k++) {
   let step = current.steps[slots[k]];
+  let layers = ensureStepLayers(step);
   let srcObj = { type: 'image', src: active[k].src, fit, smooth, alignX, alignY, zoom, gifGroupId: gid, gifFrameId: active[k].id };
+  let targetLayer;
   if (layer === 'bg') {
-   if (target === 'span' || target === 'repeat') { step.bgMode = target; step.bgSource = srcObj; step.bgPanels = [null, null, null, null]; }
-   else { if (step.bgMode !== 'panels') { step.bgMode = 'panels'; step.bgSource = null; step.bgPanels = [null, null, null, null]; } step.bgPanels[target] = srcObj; }
+   if (layers.length < 2) layers.unshift(blankLayer('panels', null, [null, null, null, null], 'Background'));
+   targetLayer = layers[0];
   } else {
-   if (target === 'span' || target === 'repeat') { step.mode = target; step.source = srcObj; step.panels = [null, null, null, null]; }
-   else {
-    if (step.mode !== 'panels') {
-     let oldTiles = step.tiles.slice(); step.mode = 'panels'; step.source = null;
-     step.panels = [0, 1, 2, 3].map(p => p === target ? null : (oldTiles[p] ? { type: 'image', src: oldTiles[p], fit: 'contain', smooth: false } : null));
-    }
-    step.panels[target] = srcObj;
-   }
+   targetLayer = layers[layers.length - 1];
   }
+  if (target === 'span' || target === 'repeat') {
+   targetLayer.mode = target; targetLayer.source = srcObj; targetLayer.panels = [null, null, null, null];
+  } else {
+   if (targetLayer.mode !== 'panels') {
+    targetLayer.mode = 'panels'; targetLayer.source = null; targetLayer.panels = [null, null, null, null];
+   }
+   targetLayer.panels[target] = srcObj;
+  }
+  syncLegacyFields(step);
   await regenerate(step, db.layout, slots[k]);
  }
 
  if (existing.length > active.length) {
   let toClean = existing.slice(active.length).sort((a, b) => b - a);
   for (let idx of toClean) {
-   let step = current.steps[idx];
+   let step = current.steps[idx], layers = ensureStepLayers(step);
    if (layer === 'bg') {
-    if (target === 'span' || target === 'repeat') { step.bgMode = 'none'; step.bgSource = null; step.bgPanels = [null, null, null, null]; }
-    else { step.bgPanels[target] = null; if (step.bgPanels.every(p => p === null)) step.bgMode = 'none'; }
-    if (step.bgMode === 'none' && step.mode === 'panels' && step.panels.every(p => p === null)) current.steps.splice(idx, 1);
-    else await regenerate(step, db.layout, idx);
+    if (layers.length > 1) {
+     let bot = layers[0];
+     if (target === 'span' || target === 'repeat') layers.shift();
+     else { bot.panels[target] = null; if (bot.panels.every(p => p === null)) layers.shift(); }
+    }
+    syncLegacyFields(step);
+    await regenerate(step, db.layout, idx);
    } else {
+    let top = layers[layers.length - 1];
     if (target === 'span' || target === 'repeat') current.steps.splice(idx, 1);
     else {
-     step.panels[target] = null; step.tiles[target] = '';
-     if (step.panels.every(p => p === null) && (!step.bgMode || step.bgMode === 'none')) current.steps.splice(idx, 1);
-     else await regenerate(step, db.layout, idx);
+     top.panels[target] = null;
+     if (top.panels.every(p => p === null) && layers.length <= 1) current.steps.splice(idx, 1);
+     else { syncLegacyFields(step); await regenerate(step, db.layout, idx); }
     }
    }
   }
