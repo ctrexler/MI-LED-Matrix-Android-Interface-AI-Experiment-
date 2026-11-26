@@ -1,5 +1,5 @@
 "use strict";
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.6.1';
 const $ = id => document.getElementById(id);
 const clone = x => typeof structuredClone === 'function' ? structuredClone(x) : JSON.parse(JSON.stringify(x));
 const uid = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);

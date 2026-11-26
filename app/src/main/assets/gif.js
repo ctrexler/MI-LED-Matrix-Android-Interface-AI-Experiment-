@@ -173,13 +173,13 @@ function openGifEditor(opts) {
  async function buildPreviewStep(src) {
   let f = blankFrame();
   let spec = { type: 'image', src, fit: gifState.fit, smooth: gifState.smooth, alignX: gifState.alignX, alignY: gifState.alignY, zoom: gifState.zoom };
-  if (layer === 'bg') {
-   if (target === 'span' || target === 'repeat') { f.bgMode = target; f.bgSource = spec; }
-   else { f.bgMode = 'panels'; f.bgPanels[target] = spec; }
+  let L = ensureStepLayers(f)[0];
+  if (target === 'span' || target === 'repeat') {
+   L.mode = target; L.source = spec; L.panels = [null, null, null, null];
   } else {
-   if (target === 'span' || target === 'repeat') { f.mode = target; f.source = spec; }
-   else { f.mode = 'panels'; f.panels[target] = spec; }
+   L.mode = 'panels'; L.source = null; L.panels = [null, null, null, null]; L.panels[target] = spec;
   }
+  syncLegacyFields(f);
   await regenerate(f);
   return f;
  }

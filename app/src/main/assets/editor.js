@@ -88,8 +88,8 @@ function renderGrid() {
     card.onpointerdown = e => dragStart(e, card);
     card.onclick = () => {
      if (suppressClick || busy || working) return;
-     if (selected === i) openSource(f.id, d);
-     else { pausePlayback(); selected = i; updateGridSelection(); renderPreview(); draftSoon(); previewCurrent(); }
+     pausePlayback(); selected = i; updateGridSelection(); renderPreview(); draftSoon(); previewCurrent();
+     openSource(f.id, d);
     };
     card.onkeydown = e => { if (e.key === 'Enter' && e.target === card) { selected = i; openSource(f.id, d); } };
     track.append(card);
@@ -192,29 +192,7 @@ function chooseType(callback) {
 function addStep() {
  if (busy || working) return;
  if (current.steps.length >= 200) return notify('Maximum 200 steps.');
- chooseType(s => {
-  openSheet('Choose placement');
-  let b = $('sheetBody'), layerSel = select([['fg', 'Foreground (top layer)'], ['bg', 'Background (bottom layer)']], 'fg');
-  b.append(field('Layer', layerSel), hint('Add one image across the wall, repeat it on every display, or place it on one display.'));
-  const choose = target => {
-   let isBg = layerSel.value === 'bg';
-   if (s.type === 'gif') {
-    openGifEditor({ groupId: null, target, layer: isBg ? 'bg' : 'fg', insertIndex: current.steps.length, isNew: true, frames: s.frames, fit: s.fit || db.defaults.fit, smooth: db.defaults.smooth, alignX: 0.5, alignY: 0.5, zoom: 1, truncated: s.truncated });
-    return;
-   }
-   let f = blankFrame();
-   let L = ensureStepLayers(f)[0];
-   if (typeof target === 'string') { L.mode = target; L.source = clone(s); L.panels = [null, null, null, null]; }
-   else { L.mode = 'panels'; L.source = null; L.panels[target] = clone(s); }
-   if (isBg) { L.name = 'Background'; f.layers.push(blankLayer('panels', null, [null, null, null, null], 'Foreground')); }
-   syncLegacyFields(f);
-   openStepStudio(f, { isNew: true, layerIdx: 0, panelIdx: typeof target === 'number' ? target : 0 });
-  };
-  buttons(b, [['Span all four', () => choose('span'), 'primary'], ['Repeat on all four', () => choose('repeat')]]);
-  let positions = el('div', undefined, 'placement');
-  for (let i = 0; i < 4; i++) positions.append(button('Display ' + (i + 1), () => choose(i)));
-  b.append(positions);
- });
+ openStepStudio(blankFrame(), { isNew: true, layerIdx: 0, panelIdx: 0 });
 }
 
 function openSource(id, index) {
@@ -227,7 +205,11 @@ function openSource(id, index) {
   openGifEditor({ groupId: g.id, target: g.target, layer: g.layer || 'fg', insertIndex: current.steps.indexOf(f), isNew: false, frames: clone(g.frames), fit: g.fit, smooth: g.smooth, alignX: g.alignX ?? 0.5, alignY: g.alignY ?? 0.5, zoom: g.zoom ?? 1, truncated: false });
   return;
  }
- openStepStudio(clone(f), { isNew: false, layerIdx: topIdx, panelIdx: index });
+ let matchIdx = topIdx;
+ for (let k = layers.length - 1; k >= 0; k--) {
+  if (layerAppearsOn(layers[k], index)) { matchIdx = k; break; }
+ }
+ openStepStudio(clone(f), { isNew: false, layerIdx: matchIdx, panelIdx: index, filterPanel: index });
 }
 
 function editSource(frame, target, isNew) {
@@ -241,6 +223,30 @@ function openBackgroundEditor(frame) {
  openStepStudio(f, { isNew: false, layerIdx: 0, panelIdx: 0 });
 }
 
+function layerAppearsOn(L, panelIdx) {
+ if (!L) return false;
+ if (L.mode === 'span' || L.mode === 'repeat') return !!L.source;
+ return Array.isArray(L.panels) && !!L.panels[panelIdx];
+}
+
+function layerScopeLabel(L) {
+ if (!L) return 'Empty';
+ if (L.mode === 'span') return L.source ? 'Span all 4' : 'Span (empty)';
+ if (L.mode === 'repeat') return L.source ? 'Repeat all 4' : 'Repeat (empty)';
+ let active = [0, 1, 2, 3].filter(i => L.panels && L.panels[i]).map(i => 'D' + (i + 1));
+ return active.length ? active.join(', ') : 'Empty';
+}
+
+async function renderLayerThumb(L, container, stepIdx) {
+ try {
+  let tmp = { id: 'thumb', mode: L.mode, source: L.source, panels: L.panels, tiles: ['', '', '', ''], layers: [{ ...L, visible: true }] };
+  await regenerate(tmp, db.layout, stepIdx);
+  if (!container.isConnected) return;
+  let w = makeWall(tmp, db.layout, false);
+  container.replaceChildren(w);
+ } catch (_) {}
+}
+
 const STUDIO_PATTERNS = [['solid', 'Solid'], ['gradient', 'Gradient'], ['checker', 'Checkerboard'], ['stripes', 'Stripes'], ['border', 'Border'], ['diamonds', 'Diamond bands'], ['zigzag', 'Zigzag stripes'], ['dots', 'Dots'], ['heart', 'Hearts'], ['star', 'Stars'], ['circle', 'Circles'], ['square', 'Squares'], ['diamond', 'Diamonds'], ['triangle', 'Triangles'], ['arrow', 'Arrows']];
 
 function openStepStudio(frame, opts = {}) {
@@ -248,6 +254,7 @@ function openStepStudio(frame, opts = {}) {
  let f = clone(frame), layers = ensureStepLayers(f);
  let activeLayerIdx = Math.max(0, Math.min(layers.length - 1, opts.layerIdx ?? (layers.length - 1)));
  let activePanelIdx = Math.max(0, Math.min(3, opts.panelIdx ?? 0));
+ let filterPanel = Number.isInteger(opts.filterPanel) ? opts.filterPanel : null;
  let activeCat = 'source';
 
  openSheet(isNew ? 'New step studio' : 'Step ' + (current.steps.findIndex(x => x.id === f.id) + 1) + ' studio');
@@ -261,18 +268,46 @@ function openStepStudio(frame, opts = {}) {
 
  let layerHead = el('div', undefined, 'layerHeadRow');
  let layerTitle = el('strong', '');
+ let filterBtn = button('', () => { filterPanel = null; rebuildAll(); renderPreviewWall(f); }, 'filterPill');
  let addLayerBtn = button('+ Add layer', () => {
   if (layers.length >= 8) return notify('Maximum 8 layers per step.');
-  layers.push(blankLayer('panels', null, [null, null, null, null], 'Layer ' + (layers.length + 1)));
+  let nl = blankLayer('panels', null, [null, null, null, null], 'Layer ' + (layers.length + 1));
+  layers.push(nl);
   activeLayerIdx = layers.length - 1;
+  filterPanel = null;
   activeCat = 'source';
   rebuildAll(); refresh();
  }, 'layerMiniBtn');
- layerHead.append(layerTitle, addLayerBtn);
+ let headActions = el('div', undefined, 'row');
+ headActions.append(filterBtn, addLayerBtn);
+ layerHead.append(layerTitle, headActions);
  let layerStack = el('div', undefined, 'layerStack');
  let catBar = el('div', undefined, 'catBar');
  let tray = el('div', undefined, 'toolTray');
  b.append(layerHead, layerStack, catBar, tray);
+
+ function renderPreviewWall(step) {
+  let w = makeWall(step, db.layout, true);
+  view.style.gridTemplateColumns = w.style.gridTemplateColumns;
+  view.replaceChildren(...Array.from(w.children));
+  view.querySelectorAll('[data-panel]').forEach(tile => {
+   let p = Number(tile.dataset.panel);
+   tile.classList.toggle('focused', filterPanel === p);
+   tile.onclick = () => {
+    filterPanel = (filterPanel === p) ? null : p;
+    activePanelIdx = p;
+    if (filterPanel !== null) {
+     let match = -1;
+     for (let k = layers.length - 1; k >= 0; k--) if (layerAppearsOn(layers[k], p)) { match = k; break; }
+     if (match >= 0) activeLayerIdx = match;
+    }
+    rebuildAll();
+    renderPreviewWall(f);
+   };
+  });
+ }
+
+ renderPreviewWall(f);
 
  function currentLayer() { return layers[activeLayerIdx] || layers[0]; }
  function currentSrc() {
@@ -298,23 +333,34 @@ function openStepStudio(frame, opts = {}) {
    let stepIdx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
    await regenerate(f, db.layout, stepIdx);
    if (editorSession !== session || rev !== session.rev) return;
-   let w = makeWall(f, db.layout, false);
-   view.style.gridTemplateColumns = w.style.gridTemplateColumns;
-   view.replaceChildren(...Array.from(w.children));
+   renderPreviewWall(f);
    queueTiles(f.tiles, [0, 1, 2, 3]);
   } catch (e) { notify(e.message); }
  }
 
  function renderLayers() {
-  layerTitle.textContent = 'Layers (' + layers.length + '/8 · top draws over bottom)';
-  layerStack.replaceChildren();
+  let stepIdx = isNew ? current.steps.length : Math.max(0, current.steps.findIndex(x => x.id === f.id));
+  let visibleIndices = [];
   for (let idx = layers.length - 1; idx >= 0; idx--) {
+   if (filterPanel === null || layerAppearsOn(layers[idx], filterPanel)) visibleIndices.push(idx);
+  }
+  layerTitle.textContent = filterPanel !== null ? 'D' + (filterPanel + 1) + ' layers (' + visibleIndices.length + '/' + layers.length + ')' : 'Layers (' + layers.length + '/8)';
+  filterBtn.hidden = filterPanel === null;
+  if (filterPanel !== null) filterBtn.textContent = 'D' + (filterPanel + 1) + ' only ×';
+  layerStack.replaceChildren();
+  if (!visibleIndices.length) {
+   layerStack.append(hint('No layers on Display ' + (filterPanel + 1) + ' yet. Tap + Add layer or clear the filter.'));
+   return;
+  }
+  for (let idx of visibleIndices) {
    let L = layers[idx];
    let row = el('div', undefined, 'layerRow' + (idx === activeLayerIdx ? ' active' : '') + (L.visible === false ? ' hiddenLayer' : ''));
-   let modeLbl = L.mode === 'span' ? 'Span' : L.mode === 'repeat' ? 'Repeat' : 'Panels';
-   let selBtn = button((L.name || 'Layer ' + (idx + 1)) + ' · ' + modeLbl, () => {
-    activeLayerIdx = idx; ensureValidCat(); rebuildAll();
-   }, 'layerSelectBtn');
+   let thumb = el('div', undefined, 'layerThumb');
+   renderLayerThumb(L, thumb, stepIdx);
+   let selBtn = el('button', undefined, 'layerSelectBtn');
+   selBtn.type = 'button';
+   selBtn.append(el('span', L.name || 'Layer ' + (idx + 1)), el('small', layerScopeLabel(L)));
+   selBtn.onclick = () => { activeLayerIdx = idx; ensureValidCat(); rebuildAll(); };
    let visBtn = button(L.visible === false ? '🚫' : '👁️', e => {
     e.stopPropagation(); L.visible = L.visible === false; renderLayers(); refresh();
    }, 'layerMiniBtn'); visBtn.title = 'Toggle visibility';
@@ -340,7 +386,7 @@ function openStepStudio(frame, opts = {}) {
     }
     ensureValidCat(); rebuildAll(); refresh();
    }, 'layerMiniBtn danger'); delBtn.title = layers.length > 1 ? 'Delete layer' : 'Clear layer';
-   row.append(selBtn, visBtn, upBtn, dnBtn, delBtn);
+   row.append(thumb, selBtn, visBtn, upBtn, dnBtn, delBtn);
    layerStack.append(row);
   }
  }
@@ -486,8 +532,6 @@ function openStepStudio(frame, opts = {}) {
    working = false; closeSheet(false); changed(); renderEditor(); previewCurrent(true);
   } catch (e) { notify(e.message); } finally { working = false; }
  }, 'primary']]);
-
- refresh();
 }
 
 function renderPatternColors(controls, s, rebuildTray, refresh, onGenerateCycle) {

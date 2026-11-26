@@ -1,5 +1,10 @@
 # LED Matrix Controller Version History
 
+## 0.6.1 — 2026-11-26
+- Fixed `buildPreviewStep()` in `gif.js` so GIF frame previews render into `step.layers[0]` instead of showing a blank grid.
+- Updated **Add step** and **One per line** step card taps to open **Step Studio** directly, and removed the redundant `refresh()` on open for instant display.
+- Added per-layer mini thumbnails, display-scope labels (`Span all 4`, `Repeat all 4`, `D1, D3`), and click-a-display filtering in **Step Studio**.
+
 ## 0.6.0 — 2026-11-26
 - Unified the step editor into **Step Studio** (`openStepStudio()`) with a pinned live preview, an **add/delete/reorder/visibility Layer Stack** (up to 8 layers per step, backwards compatible with legacy sequences), and an **icon category toolbar** (`Source`, `Placement`, `Fit & Zoom`, `Colors`, `Style`, `Step`).
 
