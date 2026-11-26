@@ -1,5 +1,10 @@
 # LED Matrix Controller Version History
 
+## 0.5.9 — 2026-11-26
+- Split the monolithic `app.js` into focused modules (`core.js`, `render.js`, `gif.js`, `editor.js`, `storage.js`, `app.js`) and updated CI to syntax-check all asset scripts.
+- Optimized runtime performance: `structuredClone` for `clone()`, reusable 16×16 scratch canvas in `rgbTile()`/`displayTileSrc()`, in-place `.selected`/`.playing` DOM updates (`updateGridSelection()`), and live-frame-only GIF slider preview with debounced thumbnail regeneration.
+- Extracted shared `buildImageControls()` and `commitStep()` helpers, and removed dead sequential upload and `playAll()` code from `MainActivity.java`.
+
 ## 0.5.8 — 2026-11-24
 - Updated hardware upload and Stored Images limits to 10 images per display (`MainActivity.upload()`, `sendSelected()`, `addStoredFromLibrary()`, `copyStoredImage()`).
 - Visually dimmed steps 11+ in the Editor and Library filmstrips while keeping them available for Live Preview.

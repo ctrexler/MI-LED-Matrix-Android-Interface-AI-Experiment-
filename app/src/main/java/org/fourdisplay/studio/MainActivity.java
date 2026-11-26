@@ -215,40 +215,27 @@ public class MainActivity extends Activity {
     if(requested==null){for(int i=0;i<4;i++)targets.add(i);}else{if(requested.length()<1||requested.length()>4)throw new Exception("Choose 1–4 displays");for(int i=0;i<requested.length();i++){int index=requested.getInt(i);if(index<0||index>3||targets.contains(index))throw new Exception("Invalid or duplicate destination");targets.add(index);}}
     byte[][][] rgb=new byte[4][count][];
     for(int display:targets){Link link=links.get(display);if(link==null||!link.ready)throw new Exception("D"+(display+1)+" must be ready");for(int frame=0;frame<count;frame++){rgb[display][frame]=Base64.decode(array.getJSONArray(frame).getString(display),Base64.DEFAULT);if(rgb[display][frame].length!=768)throw new Exception("Invalid tile");}}
-    boolean fast=payload.optBoolean("fast",false);
     waitForIdleLanes();
     int total=targets.size()*count*12+(replace?targets.size():0);
-    if(fast){
-     final AtomicInteger done=new AtomicInteger(0);
-     js("transferLabel("+JSONObject.quote("Fast parallel upload · "+count+" images")+")");
-     List<Future<Void>> tasks=new ArrayList<>();
-     for(int display:targets){
-      final int index=display;
-      tasks.add(submitLane(index,()->{
-       if(replace){write(index,CLEAR,150);js("progress("+done.incrementAndGet()+","+total+")");}
-       for(int frame=0;frame<count;frame++){
-        final byte[] pixels=rgb[index][frame];
-        write(index,BEGIN,10);done.incrementAndGet();
-        write(index,FRAME,10);done.incrementAndGet();
-        for(int block=0;block<8;block++){write(index,storePacket(block,pixels),5);js("progress("+done.incrementAndGet()+","+total+")");}
-        write(index,COMMIT,10);done.incrementAndGet();
-        write(index,END,100);js("progress("+done.incrementAndGet()+","+total+")");
-       }
-       js("storageDisplayComplete("+index+")");
-      }));
-     }
-     for(Future<Void> t:tasks)await(t);
-    }else{
-     // Sequential clear and upload per display (conservative fallback)
-     int done=0;
-     if(replace)for(int display:targets){final int index=display;log("Clearing D"+(index+1));await(submitLane(index,()->write(index,CLEAR,1000)));done++;js("progress("+done+","+total+")");}
-     for(int display:targets){for(int frame=0;frame<count;frame++){
-      final int index=display;final byte[] pixels=rgb[display][frame];js("transferLabel("+JSONObject.quote("Display "+(display+1)+" · Image "+(frame+1)+"/"+count)+")");
-      await(submitLane(index,()->write(index,BEGIN,200)));done++;await(submitLane(index,()->write(index,FRAME,200)));done++;
-      for(int block=0;block<8;block++){final byte[] packet=storePacket(block,pixels);await(submitLane(index,()->write(index,packet,80)));done++;js("progress("+done+","+total+")");}
-      await(submitLane(index,()->write(index,COMMIT,200)));done++;await(submitLane(index,()->write(index,END,1000)));done++;js("progress("+done+","+total+")");
-     }js("storageDisplayComplete("+display+")");}
+    final AtomicInteger done=new AtomicInteger(0);
+    js("transferLabel("+JSONObject.quote("Fast parallel upload · "+count+" images")+")");
+    List<Future<Void>> tasks=new ArrayList<>();
+    for(int display:targets){
+     final int index=display;
+     tasks.add(submitLane(index,()->{
+      if(replace){write(index,CLEAR,150);js("progress("+done.incrementAndGet()+","+total+")");}
+      for(int frame=0;frame<count;frame++){
+       final byte[] pixels=rgb[index][frame];
+       write(index,BEGIN,10);done.incrementAndGet();
+       write(index,FRAME,10);done.incrementAndGet();
+       for(int block=0;block<8;block++){write(index,storePacket(block,pixels),5);js("progress("+done.incrementAndGet()+","+total+")");}
+       write(index,COMMIT,10);done.incrementAndGet();
+       write(index,END,100);js("progress("+done.incrementAndGet()+","+total+")");
+      }
+      js("storageDisplayComplete("+index+")");
+     }));
     }
+    for(Future<Void> t:tasks)await(t);
     js("notify('Upload commands completed. Playback has not started automatically.')");
    }catch(Exception e){js("notify("+JSONObject.quote("Upload stopped: "+e.getMessage())+")");}
    finally{js("storageUploadFinished()");}
@@ -259,13 +246,6 @@ public class MainActivity extends Activity {
     waitForIdleLanes();
     for(int index:targets)fastWrite(index,PLAY);
     js("notify('Selected slideshow start commands dispatched.')");
-   }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
-  });}
-  @JavascriptInterface public void playAll(){liveAllowed=false;clearPreviews();operate(()->{
-   try{for(int index=0;index<4;index++){Link link=links.get(index);if(link==null||!link.ready)throw new Exception("Connect all four displays first");}
-    waitForIdleLanes();
-    for(int index=0;index<4;index++)fastWrite(index,PLAY);
-    js("notify('Stored slideshow start commands dispatched.')");
    }catch(Exception e){js("notify("+JSONObject.quote(e.getMessage())+")");}
   });}
   @JavascriptInterface public void exportLibrary(String text){ui.post(()->{if(pendingExport!=null)return;pendingExport=text;Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("application/json");intent.putExtra(Intent.EXTRA_TITLE,"four-display-library.json");try{startActivityForResult(intent,82);}catch(Exception e){pendingExport=null;log(e.toString());}});}

@@ -22,7 +22,7 @@ jobs:
           gradle-version: '8.9'
       - name: Validate web assets syntax
         run: |
-          node --check app/src/main/assets/app.js
+          for f in app/src/main/assets/*.js; do node --check "$f"; done
       - name: Install Android SDK
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Optional signing key
